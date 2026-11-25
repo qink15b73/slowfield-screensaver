@@ -66,7 +66,9 @@ Schema v1 is recognized as its earlier selection-only form; its selection is
 retained while field defaults may receive the same read-only legacy import.
 Unknown, partial, and future schemas are rejected as a whole and fall back to
 defaults plus the read-only legacy import. A settings UI will be responsible
-for persisting v2 atomically.
+for persisting v2 atomically. The native `/c` UI publishes its settings by
+writing schema `0`, every v2 value, then schema `2`; an interrupted save is
+therefore never accepted as complete on the next launch.
 
 ## Non-goals for the initial consolidation
 

@@ -8,7 +8,7 @@ use slowfield_core::{Command, parse_command};
 fn main() {
     let command_line = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
     let exit_code = match parse_command(&command_line) {
-        Ok(Command::Configure { .. }) => host::show_configuration(),
+        Ok(Command::Configure { owner }) => host::show_configuration(owner),
         Ok(Command::Install) => 0,
         Ok(command) => unsafe { host::run(command) },
         Err(error) => {

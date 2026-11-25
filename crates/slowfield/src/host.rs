@@ -9,13 +9,15 @@ use slowfield_core::{
 use windows_sys::Win32::Foundation::{
     GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
-use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, GetDC, HDC, ReleaseDC, UpdateWindow};
+use windows_sys::Win32::Graphics::Gdi::{
+    COLOR_WINDOW, ClientToScreen, GetDC, GetSysColorBrush, HDC, ReleaseDC, UpdateWindow,
+};
 use windows_sys::Win32::Graphics::OpenGL::*;
 use windows_sys::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD, REG_SZ, RegCloseKey, RegOpenKeyExA,
-    RegQueryValueExA,
+    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
+    RegCloseKey, RegCreateKeyExA, RegOpenKeyExA, RegQueryValueExA, RegSetValueExA,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -39,6 +41,25 @@ const WGL_CONTEXT_MAJOR_VERSION_ARB: i32 = 0x2091;
 const WGL_CONTEXT_MINOR_VERSION_ARB: i32 = 0x2092;
 const WGL_CONTEXT_PROFILE_MASK_ARB: i32 = 0x9126;
 const WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB: i32 = 0x0000_0002;
+const SETTINGS_WINDOW_CLASS: &CStr = c"SlowfieldSettings";
+const SETTINGS_WINDOW_TITLE: &CStr = c"Slowfield Settings";
+const SETTINGS_WIDTH: i32 = 520;
+const SETTINGS_HEIGHT: i32 = 570;
+const ID_SELECTION: i32 = 100;
+const ID_STAR_BRIGHTNESS: i32 = 101;
+const ID_DISK_OPACITY: i32 = 102;
+const ID_DOPPLER: i32 = 103;
+const ID_STAR_DENSITY: i32 = 104;
+const ID_SKY_FLOW_SPEED: i32 = 105;
+const ID_SOLID_WALLS: i32 = 106;
+const ID_FLOCK_SIZE: i32 = 107;
+const ID_PREDATOR_COUNT: i32 = 108;
+const ID_MAX_SPEED: i32 = 109;
+const ID_PREDATOR_SPEED: i32 = 110;
+const ID_WALL_TURN_DISTANCE: i32 = 111;
+const ID_WALL_FORCE: i32 = 112;
+const ID_SAVE: i32 = 113;
+const ID_CANCEL: i32 = 114;
 
 type WglCreateContextAttribsArb = unsafe extern "system" fn(HDC, HGLRC, *const i32) -> HGLRC;
 
@@ -232,11 +253,48 @@ fn with_app<T>(action: impl FnOnce(&mut App) -> T) -> Option<T> {
     })
 }
 
-pub fn show_configuration() -> i32 {
-    show_message(
-        c"Slowfield\n\nA quiet collection of slow generative fields.\n\nThe configuration UI will arrive with the shared settings schema. For now, Slowfield selects its available field at launch.\n\nRun modes:\n  /s  full-screen saver\n  /p <HWND>  control-panel preview\n  /w  resizable diagnostic preview\n  /d  full-screen debug view",
-        MB_OK | MB_ICONINFORMATION,
-    );
+pub fn show_configuration(owner: Option<WindowHandle>) -> i32 {
+    let instance = unsafe { GetModuleHandleA(std::ptr::null()) };
+    if instance.is_null() || !unsafe { register_settings_window_class(instance) } {
+        show_message(
+            c"Could not register the Slowfield settings window.",
+            MB_OK | MB_ICONERROR,
+        );
+        return 1;
+    }
+    let config = load_config();
+    let window = unsafe {
+        CreateWindowExA(
+            0,
+            SETTINGS_WINDOW_CLASS.as_ptr().cast(),
+            SETTINGS_WINDOW_TITLE.as_ptr().cast(),
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            SETTINGS_WIDTH,
+            SETTINGS_HEIGHT,
+            owner.map_or(std::ptr::null_mut(), hwnd_from),
+            std::ptr::null_mut(),
+            instance,
+            Box::into_raw(Box::new(config)).cast(),
+        )
+    };
+    if window.is_null() {
+        show_message(
+            c"Could not create the Slowfield settings window.",
+            MB_OK | MB_ICONERROR,
+        );
+        return 1;
+    }
+    unsafe { ShowWindow(window, SW_SHOWNORMAL) };
+    unsafe { UpdateWindow(window) };
+    let mut message = MSG::default();
+    while unsafe { GetMessageA(&mut message, std::ptr::null_mut(), 0, 0) } > 0 {
+        unsafe {
+            TranslateMessage(&message);
+            DispatchMessageA(&message);
+        }
+    }
     0
 }
 
@@ -332,6 +390,547 @@ unsafe fn window_procedure_impl(
         return unsafe { DefWindowProcA(window, message, w_param, l_param) };
     };
     result
+}
+
+unsafe fn register_settings_window_class(instance: HINSTANCE) -> bool {
+    let class = WNDCLASSEXA {
+        cbSize: std::mem::size_of::<WNDCLASSEXA>() as u32,
+        style: CS_HREDRAW | CS_VREDRAW,
+        lpfnWndProc: Some(settings_window_procedure),
+        hInstance: instance,
+        hCursor: unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) },
+        hbrBackground: unsafe { GetSysColorBrush(COLOR_WINDOW) },
+        lpszClassName: SETTINGS_WINDOW_CLASS.as_ptr().cast(),
+        ..Default::default()
+    };
+    unsafe { RegisterClassExA(&class) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS }
+}
+
+unsafe extern "system" fn settings_window_procedure(
+    window: HWND,
+    message: u32,
+    w_param: WPARAM,
+    l_param: LPARAM,
+) -> LRESULT {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        settings_window_procedure_impl(window, message, w_param, l_param)
+    }));
+    match result {
+        Ok(result) => result,
+        Err(_) => {
+            unsafe { DestroyWindow(window) };
+            0
+        }
+    }
+}
+
+unsafe fn settings_window_procedure_impl(
+    window: HWND,
+    message: u32,
+    w_param: WPARAM,
+    l_param: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_CREATE => {
+            let create = unsafe { &*(l_param as *const CREATESTRUCTA) };
+            unsafe { SetWindowLongPtrA(window, GWLP_USERDATA, create.lpCreateParams as isize) };
+            let config = unsafe { settings_config(window) };
+            unsafe { create_settings_controls(window, config) };
+            0
+        }
+        WM_COMMAND => {
+            let command_id = (w_param as u32 & 0xffff) as i32;
+            match command_id {
+                ID_SAVE => match unsafe { read_settings_controls(window) } {
+                    Some(config) if save_config(config) => {
+                        unsafe { DestroyWindow(window) };
+                    }
+                    Some(_) => show_error(
+                        "Could not save Slowfield settings to the current-user registry.",
+                    ),
+                    None => show_message(
+                        c"Enter a value within every displayed range.",
+                        MB_OK | MB_ICONWARNING,
+                    ),
+                },
+                ID_CANCEL => {
+                    unsafe { DestroyWindow(window) };
+                }
+                _ => {}
+            }
+            0
+        }
+        WM_CLOSE => {
+            unsafe { DestroyWindow(window) };
+            0
+        }
+        WM_NCDESTROY => {
+            let state = unsafe { GetWindowLongPtrA(window, GWLP_USERDATA) };
+            if state != 0 {
+                unsafe { drop(Box::from_raw(state as *mut SlowfieldConfig)) };
+                unsafe { SetWindowLongPtrA(window, GWLP_USERDATA, 0) };
+            }
+            unsafe { PostQuitMessage(0) };
+            0
+        }
+        _ => unsafe { DefWindowProcA(window, message, w_param, l_param) },
+    }
+}
+
+unsafe fn settings_config(window: HWND) -> SlowfieldConfig {
+    let pointer = unsafe { GetWindowLongPtrA(window, GWLP_USERDATA) } as *const SlowfieldConfig;
+    unsafe { *pointer }
+}
+
+unsafe fn create_settings_controls(window: HWND, config: SlowfieldConfig) {
+    let instance = unsafe { GetModuleHandleA(std::ptr::null()) };
+    let mut y = 18;
+    unsafe { add_label(window, instance, c"Startup field", 18, y) };
+    let selection = unsafe {
+        add_control(
+            window,
+            instance,
+            c"COMBOBOX",
+            c"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | (CBS_DROPDOWNLIST as u32),
+            180,
+            y - 3,
+            260,
+            180,
+            ID_SELECTION,
+        )
+    };
+    for label in [c"Random", c"Prime Field", c"Gravity Field", c"Flock Field"] {
+        unsafe { SendMessageA(selection, CB_ADDSTRING, 0, label.as_ptr() as isize) };
+    }
+    let selection_index = match config.launch_selection {
+        LaunchSelection::Random => 0,
+        LaunchSelection::Fixed(SceneId::Prime) => 1,
+        LaunchSelection::Fixed(SceneId::Gravity) => 2,
+        LaunchSelection::Fixed(SceneId::Flock) => 3,
+    };
+    unsafe { SendMessageA(selection, CB_SETCURSEL, selection_index, 0) };
+
+    y += 42;
+    unsafe { add_label(window, instance, c"Gravity Field", 18, y) };
+    y += 25;
+    unsafe {
+        add_integer_row(
+            window,
+            instance,
+            c"Star brightness (0-100)",
+            ID_STAR_BRIGHTNESS,
+            config.gravity.star_brightness,
+            &mut y,
+        )
+    };
+    unsafe {
+        add_integer_row(
+            window,
+            instance,
+            c"Disk opacity (0-100)",
+            ID_DISK_OPACITY,
+            config.gravity.disk_opacity,
+            &mut y,
+        )
+    };
+    unsafe {
+        add_integer_row(
+            window,
+            instance,
+            c"Doppler (0-100)",
+            ID_DOPPLER,
+            config.gravity.doppler,
+            &mut y,
+        )
+    };
+    unsafe {
+        add_integer_row(
+            window,
+            instance,
+            c"Star density (50-200)",
+            ID_STAR_DENSITY,
+            config.gravity.star_density,
+            &mut y,
+        )
+    };
+    unsafe {
+        add_integer_row(
+            window,
+            instance,
+            c"Sky flow speed (0-500)",
+            ID_SKY_FLOW_SPEED,
+            config.gravity.sky_flow_speed,
+            &mut y,
+        )
+    };
+
+    y += 12;
+    unsafe { add_label(window, instance, c"Flock Field", 18, y) };
+    y += 25;
+    let solid_walls = unsafe {
+        add_control(
+            window,
+            instance,
+            c"BUTTON",
+            c"Use solid walls",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_AUTOCHECKBOX as u32),
+            18,
+            y,
+            220,
+            24,
+            ID_SOLID_WALLS,
+        )
+    };
+    unsafe {
+        SendMessageA(
+            solid_walls,
+            BM_SETCHECK,
+            config.flock.solid_walls as usize,
+            0,
+        )
+    };
+    y += 30;
+    unsafe {
+        add_integer_row(
+            window,
+            instance,
+            c"Flock size (0-5000)",
+            ID_FLOCK_SIZE,
+            config.flock.flock_size as u32,
+            &mut y,
+        )
+    };
+    unsafe {
+        add_integer_row(
+            window,
+            instance,
+            c"Predators (0-20)",
+            ID_PREDATOR_COUNT,
+            config.flock.predator_count as u32,
+            &mut y,
+        )
+    };
+    unsafe {
+        add_float_row(
+            window,
+            instance,
+            c"Maximum speed (50-800)",
+            ID_MAX_SPEED,
+            config.flock.max_speed,
+            &mut y,
+        )
+    };
+    unsafe {
+        add_float_row(
+            window,
+            instance,
+            c"Predator speed multiplier (1-3)",
+            ID_PREDATOR_SPEED,
+            config.flock.predator_speed_multiplier,
+            &mut y,
+        )
+    };
+    unsafe {
+        add_float_row(
+            window,
+            instance,
+            c"Wall turn distance (0-500)",
+            ID_WALL_TURN_DISTANCE,
+            config.flock.wall_turn_distance,
+            &mut y,
+        )
+    };
+    unsafe {
+        add_float_row(
+            window,
+            instance,
+            c"Wall force multiplier (0-1)",
+            ID_WALL_FORCE,
+            config.flock.wall_force_multiplier,
+            &mut y,
+        )
+    };
+
+    unsafe {
+        add_control(
+            window,
+            instance,
+            c"BUTTON",
+            c"Save",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_PUSHBUTTON as u32),
+            280,
+            y + 14,
+            75,
+            28,
+            ID_SAVE,
+        )
+    };
+    unsafe {
+        add_control(
+            window,
+            instance,
+            c"BUTTON",
+            c"Cancel",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_PUSHBUTTON as u32),
+            365,
+            y + 14,
+            75,
+            28,
+            ID_CANCEL,
+        )
+    };
+}
+
+unsafe fn add_label(window: HWND, instance: HINSTANCE, text: &CStr, x: i32, y: i32) {
+    unsafe {
+        add_control(
+            window,
+            instance,
+            c"STATIC",
+            text,
+            WS_CHILD | WS_VISIBLE,
+            x,
+            y,
+            245,
+            20,
+            0,
+        )
+    };
+}
+
+unsafe fn add_integer_row(
+    window: HWND,
+    instance: HINSTANCE,
+    label: &CStr,
+    id: i32,
+    value: u32,
+    y: &mut i32,
+) {
+    unsafe { add_label(window, instance, label, 18, *y + 4) };
+    let edit = unsafe {
+        add_control(
+            window,
+            instance,
+            c"EDIT",
+            c"",
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_BORDER
+                | WS_TABSTOP
+                | (ES_AUTOHSCROLL as u32)
+                | (ES_NUMBER as u32),
+            300,
+            *y,
+            140,
+            23,
+            id,
+        )
+    };
+    unsafe {
+        SetWindowTextA(
+            edit,
+            CString::new(value.to_string())
+                .expect("numeric text has no NUL")
+                .as_ptr()
+                .cast(),
+        )
+    };
+    *y += 28;
+}
+
+unsafe fn add_float_row(
+    window: HWND,
+    instance: HINSTANCE,
+    label: &CStr,
+    id: i32,
+    value: f32,
+    y: &mut i32,
+) {
+    unsafe { add_label(window, instance, label, 18, *y + 4) };
+    let edit = unsafe {
+        add_control(
+            window,
+            instance,
+            c"EDIT",
+            c"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | (ES_AUTOHSCROLL as u32),
+            300,
+            *y,
+            140,
+            23,
+            id,
+        )
+    };
+    unsafe {
+        SetWindowTextA(
+            edit,
+            CString::new(format!("{value:.3}"))
+                .expect("numeric text has no NUL")
+                .as_ptr()
+                .cast(),
+        )
+    };
+    *y += 28;
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The helper intentionally names the Win32 child-window geometry and identity."
+)]
+unsafe fn add_control(
+    parent: HWND,
+    instance: HINSTANCE,
+    class_name: &CStr,
+    text: &CStr,
+    style: u32,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    id: i32,
+) -> HWND {
+    unsafe {
+        CreateWindowExA(
+            0,
+            class_name.as_ptr().cast(),
+            text.as_ptr().cast(),
+            style,
+            x,
+            y,
+            width,
+            height,
+            parent,
+            id as usize as HMENU,
+            instance,
+            std::ptr::null(),
+        )
+    }
+}
+
+unsafe fn read_settings_controls(window: HWND) -> Option<SlowfieldConfig> {
+    let selection = unsafe { SendMessageA(GetDlgItem(window, ID_SELECTION), CB_GETCURSEL, 0, 0) };
+    let launch_selection = match selection {
+        0 => LaunchSelection::Random,
+        1 => LaunchSelection::Fixed(SceneId::Prime),
+        2 => LaunchSelection::Fixed(SceneId::Gravity),
+        3 => LaunchSelection::Fixed(SceneId::Flock),
+        _ => return None,
+    };
+    let gravity = GravityFieldSettings {
+        star_brightness: unsafe { read_control_u32(window, ID_STAR_BRIGHTNESS)? },
+        disk_opacity: unsafe { read_control_u32(window, ID_DISK_OPACITY)? },
+        doppler: unsafe { read_control_u32(window, ID_DOPPLER)? },
+        star_density: unsafe { read_control_u32(window, ID_STAR_DENSITY)? },
+        sky_flow_speed: unsafe { read_control_u32(window, ID_SKY_FLOW_SPEED)? },
+    };
+    let flock = FlockFieldSettings {
+        solid_walls: unsafe { SendMessageA(GetDlgItem(window, ID_SOLID_WALLS), BM_GETCHECK, 0, 0) }
+            == 1,
+        flock_size: unsafe { read_control_i32(window, ID_FLOCK_SIZE)? },
+        predator_count: unsafe { read_control_i32(window, ID_PREDATOR_COUNT)? },
+        max_speed: unsafe { read_control_f32(window, ID_MAX_SPEED)? },
+        predator_speed_multiplier: unsafe { read_control_f32(window, ID_PREDATOR_SPEED)? },
+        wall_turn_distance: unsafe { read_control_f32(window, ID_WALL_TURN_DISTANCE)? },
+        wall_force_multiplier: unsafe { read_control_f32(window, ID_WALL_FORCE)? },
+    };
+    (gravity.is_valid() && flock.is_valid()).then_some(SlowfieldConfig {
+        launch_selection,
+        gravity,
+        flock,
+    })
+}
+
+unsafe fn read_control_u32(window: HWND, id: i32) -> Option<u32> {
+    unsafe { read_control_text(window, id) }.parse().ok()
+}
+
+unsafe fn read_control_i32(window: HWND, id: i32) -> Option<i32> {
+    unsafe { read_control_text(window, id) }.parse().ok()
+}
+
+unsafe fn read_control_f32(window: HWND, id: i32) -> Option<f32> {
+    let value = unsafe { read_control_text(window, id) }
+        .parse::<f32>()
+        .ok()?;
+    value.is_finite().then_some(value)
+}
+
+unsafe fn read_control_text(window: HWND, id: i32) -> String {
+    let mut buffer = [0_u8; 64];
+    let length =
+        unsafe { GetDlgItemTextA(window, id, buffer.as_mut_ptr().cast(), buffer.len() as i32) };
+    std::str::from_utf8(&buffer[..length as usize])
+        .ok()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn save_config(config: SlowfieldConfig) -> bool {
+    if !config.gravity.is_valid() || !config.flock.is_valid() {
+        return false;
+    }
+    let mut key: HKEY = std::ptr::null_mut();
+    let created = unsafe {
+        RegCreateKeyExA(
+            HKEY_CURRENT_USER,
+            CONFIG_KEY.as_ptr().cast(),
+            0,
+            std::ptr::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            std::ptr::null(),
+            &mut key,
+            std::ptr::null_mut(),
+        )
+    } == 0;
+    if !created {
+        return false;
+    }
+    let saved = unsafe {
+        write_registry_dword(key, CONFIG_SCHEMA_VALUE, 0)
+            && write_registry_dword(
+                key,
+                CONFIG_SELECTION_VALUE,
+                config.launch_selection.storage_value(),
+            )
+            && write_registry_dword(
+                key,
+                c"Gravity.StarBrightness",
+                config.gravity.star_brightness,
+            )
+            && write_registry_dword(key, c"Gravity.DiskOpacity", config.gravity.disk_opacity)
+            && write_registry_dword(key, c"Gravity.Doppler", config.gravity.doppler)
+            && write_registry_dword(key, c"Gravity.StarDensity", config.gravity.star_density)
+            && write_registry_dword(key, c"Gravity.SkyFlowSpeed", config.gravity.sky_flow_speed)
+            && write_registry_dword(key, c"Flock.SolidWalls", config.flock.solid_walls as u32)
+            && write_registry_dword(key, c"Flock.FlockSize", config.flock.flock_size as u32)
+            && write_registry_dword(
+                key,
+                c"Flock.PredatorCount",
+                config.flock.predator_count as u32,
+            )
+            && write_registry_float(key, c"Flock.MaxSpeed", config.flock.max_speed)
+            && write_registry_float(
+                key,
+                c"Flock.PredatorSpeedMultiplier",
+                config.flock.predator_speed_multiplier,
+            )
+            && write_registry_float(
+                key,
+                c"Flock.WallTurnDistance",
+                config.flock.wall_turn_distance,
+            )
+            && write_registry_float(
+                key,
+                c"Flock.WallForceMultiplier",
+                config.flock.wall_force_multiplier,
+            )
+            && write_registry_dword(key, CONFIG_SCHEMA_VALUE, CONFIG_SCHEMA_VERSION)
+    };
+    unsafe { RegCloseKey(key) };
+    saved
 }
 
 const fn low_word_as_i16(value: LPARAM) -> i32 {
@@ -797,6 +1396,36 @@ unsafe fn read_registry_dword(key: HKEY, name: &CStr) -> Option<u32> {
     };
     (result == 0 && value_type == REG_DWORD && byte_count == std::mem::size_of::<u32>() as u32)
         .then_some(value)
+}
+
+unsafe fn write_registry_dword(key: HKEY, name: &CStr, value: u32) -> bool {
+    unsafe {
+        RegSetValueExA(
+            key,
+            name.as_ptr().cast(),
+            0,
+            REG_DWORD,
+            (&value as *const u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+        ) == 0
+    }
+}
+
+unsafe fn write_registry_float(key: HKEY, name: &CStr, value: f32) -> bool {
+    let value = match CString::new(format!("{value:.3}")) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    unsafe {
+        RegSetValueExA(
+            key,
+            name.as_ptr().cast(),
+            0,
+            REG_SZ,
+            value.as_ptr().cast(),
+            value.as_bytes_with_nul().len() as u32,
+        ) == 0
+    }
 }
 
 unsafe fn read_registry_float(key: HKEY, name: &CStr) -> Option<f32> {

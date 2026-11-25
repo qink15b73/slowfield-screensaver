@@ -11,10 +11,10 @@ one Rust application:
 - **Gravity Field** — a procedural Schwarzschild-style black-hole scene.
 - **Flock Field** — a fixed-step predator/prey flocking simulation.
 
-The working default will choose one available field randomly at launch. The
-configuration UI will also permit selecting a single field explicitly. The
-first consolidation release does not change fields during an active saver
-session.
+The working default chooses one available field randomly at launch. The native
+`/c` settings window permits choosing one fixed field and adjusting the
+migrated Gravity/Flock controls. The first consolidation release does not
+change fields during an active saver session.
 
 ## Status
 
