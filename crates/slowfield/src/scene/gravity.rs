@@ -6,7 +6,8 @@
 use std::ffi::{CStr, CString};
 
 use slowfield_core::{
-    GRAVITY_SCENE_COUNT, GRAVITY_SCENE_DURATION_SECONDS, gravity_scene_descriptor,
+    GRAVITY_SCENE_COUNT, GRAVITY_SCENE_DURATION_SECONDS, GravityFieldSettings,
+    gravity_scene_descriptor,
 };
 use windows_sys::Win32::Graphics::OpenGL::*;
 
@@ -148,10 +149,11 @@ pub struct GravityScene {
     scene_random_state: u32,
     catalog_index: usize,
     scene_started_at: f32,
+    settings: GravityFieldSettings,
 }
 
 impl GravityScene {
-    pub fn new(_preview: bool, launch_seed: u32) -> Self {
+    pub fn new(_preview: bool, launch_seed: u32, settings: GravityFieldSettings) -> Self {
         let scene_random_state = nonzero_seed(launch_seed);
         let mut selection_state = scene_random_state;
         let catalog_index = next_random(&mut selection_state) as usize % GRAVITY_SCENE_COUNT;
@@ -170,6 +172,7 @@ impl GravityScene {
             scene_random_state: selection_state,
             catalog_index,
             scene_started_at: 0.0,
+            settings,
         }
     }
 
@@ -207,9 +210,21 @@ impl GravityScene {
                 self.viewport.width as f32,
                 self.viewport.height as f32,
             );
-            set_1f(gl, self.uniforms.star_gain, 0.30);
-            set_1f(gl, self.uniforms.disk_opacity, 0.90);
-            set_1f(gl, self.uniforms.doppler, 0.60);
+            set_1f(
+                gl,
+                self.uniforms.star_gain,
+                self.settings.star_brightness as f32 / 100.0,
+            );
+            set_1f(
+                gl,
+                self.uniforms.disk_opacity,
+                self.settings.disk_opacity as f32 / 100.0,
+            );
+            set_1f(
+                gl,
+                self.uniforms.doppler,
+                self.settings.doppler as f32 / 100.0,
+            );
             set_1f(
                 gl,
                 self.uniforms.sky_seed,
@@ -221,8 +236,16 @@ impl GravityScene {
                 descriptor.sky_flow_direction.0,
                 descriptor.sky_flow_direction.1,
             );
-            set_1f(gl, self.uniforms.star_density, 1.0);
-            set_1f(gl, self.uniforms.sky_flow_speed, 1.0);
+            set_1f(
+                gl,
+                self.uniforms.star_density,
+                self.settings.star_density as f32 / 100.0,
+            );
+            set_1f(
+                gl,
+                self.uniforms.sky_flow_speed,
+                self.settings.sky_flow_speed as f32 / 100.0,
+            );
             set_2f(
                 gl,
                 self.uniforms.scene_center,

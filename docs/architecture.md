@@ -61,6 +61,13 @@ selection policy plus settings for every installed field. On its first valid
 load it may import individually valid values from the former Gravity Field and
 Flock Field registry keys. It never modifies or deletes legacy keys.
 
+Schema v2 stores selection plus the migrated Gravity and Flock controls.
+Schema v1 is recognized as its earlier selection-only form; its selection is
+retained while field defaults may receive the same read-only legacy import.
+Unknown, partial, and future schemas are rejected as a whole and fall back to
+defaults plus the read-only legacy import. A settings UI will be responsible
+for persisting v2 atomically.
+
 ## Non-goals for the initial consolidation
 
 The first release does not dynamically load plugins, run multiple scenes at

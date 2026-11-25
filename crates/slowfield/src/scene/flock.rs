@@ -9,6 +9,8 @@ use std::f32::consts::TAU;
 
 use windows_sys::Win32::Graphics::OpenGL::*;
 
+use slowfield_core::FlockFieldSettings;
+
 use crate::scene::{Frame, Scene, Viewport};
 
 const EPSILON: f32 = 1.0e-6;
@@ -818,8 +820,17 @@ pub struct FlockScene {
 }
 
 impl FlockScene {
-    pub fn new(preview: bool) -> Self {
-        let mut settings = FlockSettings::default();
+    pub fn new(preview: bool, field_settings: FlockFieldSettings) -> Self {
+        let mut settings = FlockSettings {
+            initial_flock_size: field_settings.flock_size,
+            initial_predator_count: field_settings.predator_count,
+            max_speed: field_settings.max_speed,
+            predator_speed_multiplier: field_settings.predator_speed_multiplier,
+            wall_turn_distance: field_settings.wall_turn_distance,
+            wall_force_multiplier: field_settings.wall_force_multiplier,
+            wrap_edges: !field_settings.solid_walls,
+            ..FlockSettings::default()
+        };
         if preview {
             // The small Control Panel preview stays bounded regardless of the
             // later persisted full-screen population setting.

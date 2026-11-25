@@ -2,7 +2,7 @@ mod flock;
 mod gravity;
 mod prime;
 
-use slowfield_core::SceneId;
+use slowfield_core::{FlockFieldSettings, GravityFieldSettings, SceneId};
 
 /// Pixel dimensions supplied by the host after every window resize.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,10 +67,20 @@ pub fn available_scenes() -> &'static [SceneId] {
 /// Creates one field from the host's one-per-launch random state. Fields may
 /// derive their internal composition from it, but never own process-wide random
 /// state themselves.
-pub fn create_scene(scene: SceneId, preview: bool, launch_seed: u32) -> Box<dyn Scene> {
+pub fn create_scene(
+    scene: SceneId,
+    preview: bool,
+    launch_seed: u32,
+    gravity_settings: GravityFieldSettings,
+    flock_settings: FlockFieldSettings,
+) -> Box<dyn Scene> {
     match scene {
         SceneId::Prime => Box::new(prime::PrimeScene::new(preview)),
-        SceneId::Flock => Box::new(flock::FlockScene::new(preview)),
-        SceneId::Gravity => Box::new(gravity::GravityScene::new(preview, launch_seed)),
+        SceneId::Flock => Box::new(flock::FlockScene::new(preview, flock_settings)),
+        SceneId::Gravity => Box::new(gravity::GravityScene::new(
+            preview,
+            launch_seed,
+            gravity_settings,
+        )),
     }
 }

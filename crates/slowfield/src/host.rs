@@ -2,7 +2,10 @@ use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use slowfield_core::{Command, LaunchSelection, SceneId, WindowHandle, select_scene};
+use slowfield_core::{
+    CONFIG_SCHEMA_VERSION, Command, FlockFieldSettings, GravityFieldSettings, LaunchSelection,
+    SceneId, SlowfieldConfig, WindowHandle, select_scene,
+};
 use windows_sys::Win32::Foundation::{
     GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
@@ -11,7 +14,8 @@ use windows_sys::Win32::Graphics::OpenGL::*;
 use windows_sys::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD, RegCloseKey, RegOpenKeyExA, RegQueryValueExA,
+    HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD, REG_SZ, RegCloseKey, RegOpenKeyExA,
+    RegQueryValueExA,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -28,7 +32,9 @@ const ADJUSTMENT_HEIGHT: i32 = 760;
 const CONFIG_KEY: &CStr = c"Software\\Qink\\Slowfield";
 const CONFIG_SCHEMA_VALUE: &CStr = c"ConfigSchemaVersion";
 const CONFIG_SELECTION_VALUE: &CStr = c"LaunchSelection";
-const CONFIG_SCHEMA_VERSION: u32 = 1;
+const LEGACY_SELECTION_SCHEMA_VERSION: u32 = 1;
+const LEGACY_GRAVITY_KEY: &CStr = c"Software\\BlackHoleScreensaver";
+const LEGACY_FLOCK_KEY: &CStr = c"Software\\Qink\\BoidsScreensaver";
 const WGL_CONTEXT_MAJOR_VERSION_ARB: i32 = 0x2091;
 const WGL_CONTEXT_MINOR_VERSION_ARB: i32 = 0x2092;
 const WGL_CONTEXT_PROFILE_MASK_ARB: i32 = 0x9126;
@@ -435,7 +441,8 @@ pub unsafe fn run(command: Command) -> i32 {
         );
         return 1;
     }
-    let (scene_id, launch_seed) = match choose_scene() {
+    let config = load_config();
+    let (scene_id, launch_seed) = match choose_scene(config.launch_selection) {
         Ok(selection) => selection,
         Err(error) => {
             unsafe { DestroyWindow(window) };
@@ -443,7 +450,13 @@ pub unsafe fn run(command: Command) -> i32 {
             return 1;
         }
     };
-    let scene = create_scene(scene_id, mode == RunMode::Preview, launch_seed);
+    let scene = create_scene(
+        scene_id,
+        mode == RunMode::Preview,
+        launch_seed,
+        config.gravity,
+        config.flock,
+    );
     let app = match unsafe { App::create(window, mode, scene) } {
         Ok(app) => app,
         Err(message) => {
@@ -491,19 +504,35 @@ fn hwnd_from(handle: WindowHandle) -> HWND {
     handle.raw() as usize as HWND
 }
 
-fn choose_scene() -> Result<(SceneId, u32), slowfield_core::SceneSelectionError> {
+fn choose_scene(
+    selection: LaunchSelection,
+) -> Result<(SceneId, u32), slowfield_core::SceneSelectionError> {
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos() as u64);
-    select_scene(load_launch_selection(), available_scenes(), seed)
-        .map(|scene| (scene, seed as u32))
+    select_scene(selection, available_scenes(), seed).map(|scene| (scene, seed as u32))
 }
 
-/// Loads only a fully-recognized Slowfield schema. Missing, interrupted,
-/// future, wrong-typed, or unknown values preserve the product default:
-/// choose an available field randomly. The reader is intentionally side-effect
-/// free; first-run defaults are saved only by the future settings UI.
-fn load_launch_selection() -> LaunchSelection {
+/// Loads a complete Slowfield schema v2 when available. The original v1 schema
+/// carried only scene selection and is safely upgraded in memory. No valid new
+/// schema means defaults plus an individually-safe, read-only legacy import.
+fn load_config() -> SlowfieldConfig {
+    match load_slowfield_config() {
+        Some(StoredConfig::V2(config)) => config,
+        Some(StoredConfig::V1(launch_selection)) => SlowfieldConfig {
+            launch_selection,
+            ..import_legacy_config()
+        },
+        None => import_legacy_config(),
+    }
+}
+
+enum StoredConfig {
+    V1(LaunchSelection),
+    V2(SlowfieldConfig),
+}
+
+fn load_slowfield_config() -> Option<StoredConfig> {
     let mut key: HKEY = std::ptr::null_mut();
     if unsafe {
         RegOpenKeyExA(
@@ -515,18 +544,241 @@ fn load_launch_selection() -> LaunchSelection {
         )
     } != 0
     {
-        return LaunchSelection::Random;
+        return None;
     }
-    let selection = (|| {
+    let config = (|| {
         let schema = unsafe { read_registry_dword(key, CONFIG_SCHEMA_VALUE) }?;
-        if schema != CONFIG_SCHEMA_VERSION {
-            return None;
-        }
         let stored_selection = unsafe { read_registry_dword(key, CONFIG_SELECTION_VALUE) }?;
-        LaunchSelection::from_storage(stored_selection)
+        let launch_selection = LaunchSelection::from_storage(stored_selection)?;
+        match schema {
+            LEGACY_SELECTION_SCHEMA_VERSION => Some(StoredConfig::V1(launch_selection)),
+            CONFIG_SCHEMA_VERSION => {
+                let gravity = unsafe { read_gravity_settings(key, "Gravity")? };
+                let flock = unsafe { read_flock_settings(key, "Flock")? };
+                Some(StoredConfig::V2(SlowfieldConfig {
+                    launch_selection,
+                    gravity,
+                    flock,
+                }))
+            }
+            _ => None,
+        }
     })();
     unsafe { RegCloseKey(key) };
-    selection.unwrap_or(LaunchSelection::Random)
+    config
+}
+
+fn import_legacy_config() -> SlowfieldConfig {
+    let mut config = SlowfieldConfig::default();
+    with_registry_key(LEGACY_GRAVITY_KEY, |key| {
+        config.gravity = unsafe { import_legacy_gravity_settings(key, config.gravity) };
+    });
+    with_registry_key(LEGACY_FLOCK_KEY, |key| {
+        config.flock = unsafe { import_legacy_flock_settings(key, config.flock) };
+    });
+    config
+}
+
+fn with_registry_key(name: &CStr, action: impl FnOnce(HKEY)) {
+    let mut key: HKEY = std::ptr::null_mut();
+    if unsafe {
+        RegOpenKeyExA(
+            HKEY_CURRENT_USER,
+            name.as_ptr().cast(),
+            0,
+            KEY_READ,
+            &mut key,
+        )
+    } == 0
+    {
+        action(key);
+        unsafe { RegCloseKey(key) };
+    }
+}
+
+unsafe fn read_gravity_settings(key: HKEY, prefix: &str) -> Option<GravityFieldSettings> {
+    let settings = GravityFieldSettings {
+        star_brightness: unsafe { read_named_dword(key, prefix, "StarBrightness")? },
+        disk_opacity: unsafe { read_named_dword(key, prefix, "DiskOpacity")? },
+        doppler: unsafe { read_named_dword(key, prefix, "Doppler")? },
+        star_density: unsafe { read_named_dword(key, prefix, "StarDensity")? },
+        sky_flow_speed: unsafe { read_named_dword(key, prefix, "SkyFlowSpeed")? },
+    };
+    settings.is_valid().then_some(settings)
+}
+
+unsafe fn read_flock_settings(key: HKEY, prefix: &str) -> Option<FlockFieldSettings> {
+    let solid_walls = unsafe { read_named_dword(key, prefix, "SolidWalls")? };
+    let settings = FlockFieldSettings {
+        solid_walls: match solid_walls {
+            0 => false,
+            1 => true,
+            _ => return None,
+        },
+        flock_size: unsafe { read_named_dword(key, prefix, "FlockSize")? }
+            .try_into()
+            .ok()?,
+        predator_count: unsafe { read_named_dword(key, prefix, "PredatorCount")? }
+            .try_into()
+            .ok()?,
+        max_speed: unsafe { read_named_float(key, prefix, "MaxSpeed")? },
+        predator_speed_multiplier: unsafe {
+            read_named_float(key, prefix, "PredatorSpeedMultiplier")?
+        },
+        wall_turn_distance: unsafe { read_named_float(key, prefix, "WallTurnDistance")? },
+        wall_force_multiplier: unsafe { read_named_float(key, prefix, "WallForceMultiplier")? },
+    };
+    settings.is_valid().then_some(settings)
+}
+
+unsafe fn import_legacy_gravity_settings(
+    key: HKEY,
+    mut settings: GravityFieldSettings,
+) -> GravityFieldSettings {
+    if let Some(value) = unsafe { read_registry_dword(key, c"StarBrightness") } {
+        let candidate = GravityFieldSettings {
+            star_brightness: value,
+            ..settings
+        };
+        if candidate.is_valid() {
+            settings = candidate;
+        }
+    }
+    if let Some(value) = unsafe { read_registry_dword(key, c"DiskOpacity") } {
+        let candidate = GravityFieldSettings {
+            disk_opacity: value,
+            ..settings
+        };
+        if candidate.is_valid() {
+            settings = candidate;
+        }
+    }
+    if let Some(value) = unsafe { read_registry_dword(key, c"Doppler") } {
+        let candidate = GravityFieldSettings {
+            doppler: value,
+            ..settings
+        };
+        if candidate.is_valid() {
+            settings = candidate;
+        }
+    }
+    if let Some(value) = unsafe { read_registry_dword(key, c"StarDensity") } {
+        let candidate = GravityFieldSettings {
+            star_density: value,
+            ..settings
+        };
+        if candidate.is_valid() {
+            settings = candidate;
+        }
+    }
+    if let Some(value) = unsafe { read_registry_dword(key, c"SkyFlowSpeed") } {
+        let candidate = GravityFieldSettings {
+            sky_flow_speed: value,
+            ..settings
+        };
+        if candidate.is_valid() {
+            settings = candidate;
+        }
+    }
+    settings
+}
+
+unsafe fn import_legacy_flock_settings(
+    key: HKEY,
+    mut settings: FlockFieldSettings,
+) -> FlockFieldSettings {
+    if let Some(value) = unsafe { read_registry_dword(key, c"SolidWalls") }
+        && let Some(solid_walls) = match value {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    {
+        let candidate = FlockFieldSettings {
+            solid_walls,
+            ..settings
+        };
+        if candidate.is_valid() {
+            settings = candidate;
+        }
+    }
+    if let Some(value) = unsafe { read_registry_dword(key, c"FlockSize") }
+        && let Ok(flock_size) = value.try_into()
+    {
+        let candidate = FlockFieldSettings {
+            flock_size,
+            ..settings
+        };
+        if candidate.is_valid() {
+            settings = candidate;
+        }
+    }
+    if let Some(value) = unsafe { read_registry_dword(key, c"PredatorCount") }
+        && let Ok(predator_count) = value.try_into()
+    {
+        let candidate = FlockFieldSettings {
+            predator_count,
+            ..settings
+        };
+        if candidate.is_valid() {
+            settings = candidate;
+        }
+    }
+    if let Some(max_speed) = unsafe { read_registry_float(key, c"MaxSpeed") } {
+        let candidate = FlockFieldSettings {
+            max_speed,
+            ..settings
+        };
+        if candidate.is_valid() {
+            settings = candidate;
+        }
+    }
+    if let Some(predator_speed_multiplier) =
+        unsafe { read_registry_float(key, c"PredatorSpeedMultiplier") }
+    {
+        let candidate = FlockFieldSettings {
+            predator_speed_multiplier,
+            ..settings
+        };
+        if candidate.is_valid() {
+            settings = candidate;
+        }
+    }
+    if let Some(wall_turn_distance) = unsafe { read_registry_float(key, c"WallTurnDistance") } {
+        let candidate = FlockFieldSettings {
+            wall_turn_distance,
+            ..settings
+        };
+        if candidate.is_valid() {
+            settings = candidate;
+        }
+    }
+    if let Some(wall_force_multiplier) = unsafe { read_registry_float(key, c"WallForceMultiplier") }
+    {
+        let candidate = FlockFieldSettings {
+            wall_force_multiplier,
+            ..settings
+        };
+        if candidate.is_valid() {
+            settings = candidate;
+        }
+    }
+    settings
+}
+
+unsafe fn read_named_dword(key: HKEY, prefix: &str, suffix: &str) -> Option<u32> {
+    let name = registry_value_name(prefix, suffix)?;
+    unsafe { read_registry_dword(key, &name) }
+}
+
+unsafe fn read_named_float(key: HKEY, prefix: &str, suffix: &str) -> Option<f32> {
+    let name = registry_value_name(prefix, suffix)?;
+    unsafe { read_registry_float(key, &name) }
+}
+
+fn registry_value_name(prefix: &str, suffix: &str) -> Option<CString> {
+    let separator = if prefix.is_empty() { "" } else { "." };
+    CString::new(format!("{prefix}{separator}{suffix}")).ok()
 }
 
 unsafe fn read_registry_dword(key: HKEY, name: &CStr) -> Option<u32> {
@@ -545,6 +797,31 @@ unsafe fn read_registry_dword(key: HKEY, name: &CStr) -> Option<u32> {
     };
     (result == 0 && value_type == REG_DWORD && byte_count == std::mem::size_of::<u32>() as u32)
         .then_some(value)
+}
+
+unsafe fn read_registry_float(key: HKEY, name: &CStr) -> Option<f32> {
+    let mut value_type = 0;
+    let mut bytes = [0_u8; 64];
+    let mut byte_count = bytes.len() as u32;
+    let result = unsafe {
+        RegQueryValueExA(
+            key,
+            name.as_ptr().cast(),
+            std::ptr::null(),
+            &mut value_type,
+            bytes.as_mut_ptr(),
+            &mut byte_count,
+        )
+    };
+    if result != 0 || value_type != REG_SZ || byte_count == 0 || byte_count > bytes.len() as u32 {
+        return None;
+    }
+    let text = std::str::from_utf8(&bytes[..byte_count as usize])
+        .ok()?
+        .strip_suffix('\0')?
+        .trim();
+    let value = text.parse::<f32>().ok()?;
+    value.is_finite().then_some(value)
 }
 
 fn show_message(text: &CStr, flags: u32) {

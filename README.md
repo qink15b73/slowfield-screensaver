@@ -52,6 +52,11 @@ Gravity embeds its canonical GLSL source at build time, uses the migrated
 864-scene catalogue, and permits one GPU frame in flight. `legacy/` contains
 historical builds but is not a Slowfield entry point.
 
+Slowfield reads `HKCU\Software\Qink\Slowfield` schema v2 when it is
+complete and valid. Otherwise it uses safe defaults and may read individually
+valid controls from the former Gravity and Flock registry keys; it never edits
+or removes those legacy keys.
+
 ## Repository layout
 
 ```text
