@@ -12,6 +12,7 @@ build.
   `qink15b73/slowfield-screensaver`, retaining its Git history.
 - **Baseline commit:** `c25c432` — `fix: update scene catalogue to 864 scenes
   and adjust inclination count to 4`.
+- **Imported reference:** `legacy/gravity-field/`.
 - **License and attribution:** MIT. The existing attribution for adapted
   initial shader material from `s0xDk/ghostty-blackhole` remains in `LICENSE`.
 
@@ -43,6 +44,5 @@ build.
   locally for reference but ignored by Slowfield Git.
 - The archived Flock Field nested `.git` directory was deliberately removed so
   Slowfield remains the only Git worktree under this root.
-- No imported source is compiled by the existing Gravity Field build. The
-  shared Rust workspace will add ports incrementally and replace the legacy
-  build only after behavior-specific verification succeeds.
+- Legacy source is not compiled by Slowfield. The shared Rust workspace ports
+  fields incrementally after behavior-specific verification succeeds.

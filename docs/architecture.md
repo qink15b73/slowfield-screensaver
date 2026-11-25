@@ -22,6 +22,9 @@ A scene is selected before rendering and has a bounded lifecycle:
 Initial scenes are Prime Field, Gravity Field, and Flock Field. New fields must
 fit the same contract and keep all resource ownership inside the one process.
 
+The former standalone implementations are isolated under `legacy/`. They are
+read-only behavior references, never child applications or fallback builds.
+
 ## Rendering compatibility
 
 The initial common target is an OpenGL 3.3 **compatibility** profile. It is the

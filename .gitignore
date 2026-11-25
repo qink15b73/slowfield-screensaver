@@ -8,5 +8,8 @@
 # Imported, reproducible legacy build output.
 /legacy/boids-screensaver/bin/
 /legacy/boids-screensaver/build/
+/legacy/gravity-field/blackhole.scr
+/legacy/gravity-field/blackhole.scr.manifest
+/legacy/gravity-field/blackhole_screensaver.obj
 /legacy/ulam-screensaver/bin/
 /legacy/ulam-screensaver/target/

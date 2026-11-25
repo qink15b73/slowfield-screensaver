@@ -18,11 +18,10 @@ session.
 
 ## Status
 
-The repository is in a controlled migration. The existing Gravity Field C
-screensaver remains the buildable baseline while the shared Rust host is
-introduced. Historical source from Prime Field and Flock Field lives under
-`legacy/` only as a migration reference; it is not built or shipped by
-Slowfield.
+The repository is in a controlled migration. The active product source is the
+Rust workspace. The original Prime Field, Gravity Field, and Flock Field
+implementations now live under `legacy/` only as behavior references; they are
+not built or shipped by Slowfield.
 
 The detailed migration sequence is tracked in
 [issue #1](https://github.com/qink15b73/slowfield-screensaver/issues/1).
@@ -37,25 +36,29 @@ The detailed migration sequence is tracked in
 - bounded scene workloads and scene-specific frame policies; and
 - one release artifact: `slowfield.scr`.
 
-## Current baseline build
+## Development build
 
-Until the Rust workspace takes over the release artifact, the retained Gravity
-Field baseline can be built with:
+The current Rust workspace validates product rules that do not need a Win32
+window or GPU:
 
 ```bat
-build.bat
+cargo fmt --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-It currently produces `blackhole.scr`. This is transitional and will be
-replaced only after all scenes run from the shared Rust host.
+The shared Windows host and its first rendered field are the next migration
+steps. `legacy/` contains historical builds but is not a Slowfield entry point.
 
 ## Repository layout
 
 ```text
 legacy/                 Imported source retained for behavior comparison
+  gravity-field/         Original Black Hole source and its historic tools
   boids-screensaver/    Archived Flock Field source
   ulam-screensaver/     Prime Field source without prior Git history
-docs/                   Architecture, provenance, and retained documentation
+crates/                 Active Rust workspace source
+docs/                   Architecture and provenance
 ```
 
 ## License and notices
