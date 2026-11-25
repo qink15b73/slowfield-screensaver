@@ -1,3 +1,4 @@
+mod flock;
 mod prime;
 
 use slowfield_core::SceneId;
@@ -29,14 +30,14 @@ pub trait Scene {
 }
 
 pub fn available_scenes() -> &'static [SceneId] {
-    &[SceneId::Prime]
+    &[SceneId::Prime, SceneId::Flock]
 }
 
 pub fn create_scene(scene: SceneId, preview: bool) -> Box<dyn Scene> {
     match scene {
         SceneId::Prime => Box::new(prime::PrimeScene::new(preview)),
-        // These variants cannot be selected until their migrations make them
-        // available. Keeping the match exhaustive makes that dependency clear.
-        SceneId::Gravity | SceneId::Flock => unreachable!("unavailable scene selected"),
+        SceneId::Flock => Box::new(flock::FlockScene::new(preview)),
+        // Gravity Field is not advertised until its port supplies a scene.
+        SceneId::Gravity => unreachable!("unavailable scene selected"),
     }
 }

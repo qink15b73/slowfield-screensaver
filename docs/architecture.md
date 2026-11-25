@@ -22,6 +22,10 @@ A scene is selected before rendering and has a bounded lifecycle:
 Initial scenes are Prime Field, Gravity Field, and Flock Field. New fields must
 fit the same contract and keep all resource ownership inside the one process.
 
+Prime Field and Flock Field have entered the shared host. Gravity Field stays
+unavailable to the selection policy until its GLSL program, scene catalogue,
+and GPU back-pressure policy have been migrated.
+
 The former standalone implementations are isolated under `legacy/`. They are
 read-only behavior references, never child applications or fallback builds.
 
