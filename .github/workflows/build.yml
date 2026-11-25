@@ -1,0 +1,54 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build release artifact
+        shell: cmd
+        run: build.bat
+
+      - name: Upload screen saver
+        uses: actions/upload-artifact@v4
+        with:
+          name: slowfield-screensaver
+          path: bin/slowfield.scr
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: slowfield-screensaver
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: slowfield.scr
+          generate_release_notes: true
