@@ -20,6 +20,9 @@ use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
     RegCloseKey, RegCreateKeyExA, RegOpenKeyExA, RegQueryValueExA, RegSetValueExA,
 };
+use windows_sys::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 const ERROR_CLASS_ALREADY_EXISTS: u32 = 1410;
@@ -80,6 +83,12 @@ struct DisplayMonitor {
 struct FullscreenInputTarget {
     render_window: HWND,
     initial_mouse: POINT,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DpiAwareness {
+    PerMonitor,
+    Fallback,
 }
 
 type WglCreateContextAttribsArb = unsafe extern "system" fn(HDC, HGLRC, *const i32) -> HGLRC;
@@ -1132,6 +1141,14 @@ unsafe fn create_background_window(instance: HINSTANCE, bounds: DisplayBounds) -
     }
 }
 
+fn configure_dpi_awareness() -> DpiAwareness {
+    if unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) } != 0 {
+        DpiAwareness::PerMonitor
+    } else {
+        DpiAwareness::Fallback
+    }
+}
+
 unsafe fn enumerate_display_monitors() -> Option<Vec<DisplayMonitor>> {
     let mut monitors = Vec::new();
     let completed = unsafe {
@@ -1187,10 +1204,22 @@ fn primary_display(monitors: &[DisplayMonitor]) -> DisplayMonitor {
 fn background_display_bounds(
     monitors: &[DisplayMonitor],
     render_bounds: DisplayBounds,
+    dpi_awareness: DpiAwareness,
 ) -> Vec<DisplayBounds> {
     monitors
         .iter()
         .filter_map(|monitor| (monitor.bounds != render_bounds).then_some(monitor.bounds))
+        // A per-monitor-aware process receives physical monitor rectangles.
+        // If the older API fallback was the only available option, extend the
+        // black window past its lower/right edges to avoid a DPI-rounding seam.
+        .map(|bounds| match dpi_awareness {
+            DpiAwareness::PerMonitor => bounds,
+            DpiAwareness::Fallback => DisplayBounds {
+                width: bounds.width.saturating_add(1),
+                height: bounds.height.saturating_add(1),
+                ..bounds
+            },
+        })
         .collect()
 }
 
@@ -1211,6 +1240,7 @@ pub unsafe fn run(command: Command) -> i32 {
         );
         return 1;
     }
+    let dpi_awareness = configure_dpi_awareness();
     let monitors = if mode == RunMode::Fullscreen {
         match unsafe { enumerate_display_monitors() } {
             Some(monitors) => monitors,
@@ -1248,7 +1278,8 @@ pub unsafe fn run(command: Command) -> i32 {
             );
             return 1;
         }
-        for bounds in background_display_bounds(&monitors, render_bounds) {
+        let bounds = background_display_bounds(&monitors, render_bounds, dpi_awareness);
+        for bounds in bounds {
             let background = unsafe { create_background_window(instance, bounds) };
             if background.is_null() {
                 for background in background_windows {
@@ -1707,7 +1738,9 @@ fn show_message(text: &CStr, flags: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DisplayBounds, DisplayMonitor, background_display_bounds, primary_display};
+    use super::{
+        DisplayBounds, DisplayMonitor, DpiAwareness, background_display_bounds, primary_display,
+    };
 
     fn display(x: i32, is_primary: bool) -> DisplayMonitor {
         DisplayMonitor {
@@ -1743,8 +1776,30 @@ mod tests {
         let left = display(-1_920, false);
         let right = display(1_920, false);
         assert_eq!(
-            background_display_bounds(&[left, primary, right], primary.bounds),
+            background_display_bounds(
+                &[left, primary, right],
+                primary.bounds,
+                DpiAwareness::PerMonitor,
+            ),
             vec![left.bounds, right.bounds]
+        );
+    }
+
+    #[test]
+    fn fallback_backgrounds_extend_past_lower_and_right_edges() {
+        let primary = display(0, true);
+        let secondary = display(1_920, false);
+        assert_eq!(
+            background_display_bounds(
+                &[primary, secondary],
+                primary.bounds,
+                DpiAwareness::Fallback,
+            ),
+            vec![DisplayBounds {
+                width: secondary.bounds.width + 1,
+                height: secondary.bounds.height + 1,
+                ..secondary.bounds
+            }]
         );
     }
 }

@@ -18,7 +18,8 @@ change fields during an active saver session.
 
 In full-screen saver mode, Slowfield renders on the Windows primary display.
 Every other display is covered by a black, topmost background window; no second
-OpenGL context or renderer is created for those displays.
+OpenGL context or renderer is created for those displays. The saver is
+per-monitor DPI aware so these windows align with mixed-scaling displays.
 
 ## Status
 
