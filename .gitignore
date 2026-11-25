@@ -3,3 +3,9 @@
 *.log
 *.exe
 *.scr
+
+# Imported, reproducible legacy build output.
+/legacy/boids-screensaver/bin/
+/legacy/boids-screensaver/build/
+/legacy/ulam-screensaver/bin/
+/legacy/ulam-screensaver/target/
