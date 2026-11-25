@@ -54,6 +54,14 @@ scene to render identically:
 - Gravity Field preserves one-frame-in-flight GPU fencing and skips work while
   the GPU is busy.
 
+## Full-screen display policy
+
+The host enumerates Windows displays for `/s` and `/d`. It renders the selected
+field in one compatibility-profile OpenGL window on the primary display, then
+places a black, topmost non-rendering window over each other display. Input on
+any of those windows closes the shared saver session. Preview and diagnostic
+window modes remain single-window modes.
+
 ## Configuration
 
 Slowfield owns a fresh per-user configuration schema. It stores the launch

@@ -10,7 +10,8 @@ use windows_sys::Win32::Foundation::{
     GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    COLOR_WINDOW, ClientToScreen, GetDC, GetSysColorBrush, HDC, ReleaseDC, UpdateWindow,
+    BLACK_BRUSH, COLOR_WINDOW, ClientToScreen, EnumDisplayMonitors, GetDC, GetMonitorInfoA,
+    GetStockObject, GetSysColorBrush, HBRUSH, HDC, HMONITOR, MONITORINFO, ReleaseDC, UpdateWindow,
 };
 use windows_sys::Win32::Graphics::OpenGL::*;
 use windows_sys::Win32::Media::{timeBeginPeriod, timeEndPeriod};
@@ -41,6 +42,7 @@ const WGL_CONTEXT_MAJOR_VERSION_ARB: i32 = 0x2091;
 const WGL_CONTEXT_MINOR_VERSION_ARB: i32 = 0x2092;
 const WGL_CONTEXT_PROFILE_MASK_ARB: i32 = 0x9126;
 const WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB: i32 = 0x0000_0002;
+const BACKGROUND_WINDOW_CLASS: &CStr = c"SlowfieldBackground";
 const SETTINGS_WINDOW_CLASS: &CStr = c"SlowfieldSettings";
 const SETTINGS_WINDOW_TITLE: &CStr = c"Slowfield Settings";
 const SETTINGS_WIDTH: i32 = 520;
@@ -60,6 +62,25 @@ const ID_WALL_TURN_DISTANCE: i32 = 111;
 const ID_WALL_FORCE: i32 = 112;
 const ID_SAVE: i32 = 113;
 const ID_CANCEL: i32 = 114;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DisplayBounds {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DisplayMonitor {
+    bounds: DisplayBounds,
+    is_primary: bool,
+}
+
+struct FullscreenInputTarget {
+    render_window: HWND,
+    initial_mouse: POINT,
+}
 
 type WglCreateContextAttribsArb = unsafe extern "system" fn(HDC, HGLRC, *const i32) -> HGLRC;
 
@@ -81,7 +102,6 @@ struct App {
     device_context: HDC,
     render_context: HGLRC,
     mode: RunMode,
-    initial_mouse: POINT,
     launch: Instant,
     scene: Box<dyn Scene>,
 }
@@ -159,14 +179,11 @@ impl App {
             unsafe { ReleaseDC(window, device_context) };
             return Err("Could not activate the OpenGL compatibility context.".into());
         }
-        let mut initial_mouse = POINT::default();
-        unsafe { GetCursorPos(&mut initial_mouse) };
         let mut app = Self {
             window,
             device_context,
             render_context,
             mode,
-            initial_mouse,
             launch: Instant::now(),
             scene,
         };
@@ -235,6 +252,7 @@ unsafe fn wgl_create_context_attribs() -> Option<WglCreateContextAttribsArb> {
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
+    static FULLSCREEN_INPUT_TARGET: RefCell<Option<FullscreenInputTarget>> = const { RefCell::new(None) };
 }
 
 /// Runs a window-message action without retaining a `RefCell` borrow across
@@ -251,6 +269,31 @@ fn with_app<T>(action: impl FnOnce(&mut App) -> T) -> Option<T> {
             Err(payload) => std::panic::resume_unwind(payload),
         }
     })
+}
+
+fn with_fullscreen_input_target<T>(action: impl FnOnce(&FullscreenInputTarget) -> T) -> Option<T> {
+    FULLSCREEN_INPUT_TARGET.with(|slot| slot.borrow().as_ref().map(action))
+}
+
+fn close_fullscreen_render_window() {
+    let _ = with_fullscreen_input_target(|target| unsafe {
+        PostMessageA(target.render_window, WM_CLOSE, 0, 0);
+    });
+}
+
+fn initialize_fullscreen_input_target(render_window: HWND) {
+    let mut initial_mouse = POINT::default();
+    unsafe { GetCursorPos(&mut initial_mouse) };
+    FULLSCREEN_INPUT_TARGET.with(|slot| {
+        *slot.borrow_mut() = Some(FullscreenInputTarget {
+            render_window,
+            initial_mouse,
+        });
+    });
+}
+
+fn clear_fullscreen_input_target() {
+    FULLSCREEN_INPUT_TARGET.with(|slot| *slot.borrow_mut() = None);
 }
 
 pub fn show_configuration(owner: Option<WindowHandle>) -> i32 {
@@ -369,7 +412,7 @@ unsafe fn window_procedure_impl(
         WM_KEYDOWN | WM_SYSKEYDOWN | WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN
             if app.mode.exits_on_input() =>
         {
-            unsafe { PostMessageA(window, WM_CLOSE, 0, 0) };
+            close_fullscreen_render_window();
             0
         }
         WM_MOUSEMOVE if app.mode.exits_on_input() => {
@@ -378,10 +421,13 @@ unsafe fn window_procedure_impl(
                 y: high_word_as_i16(l_param),
             };
             unsafe { ClientToScreen(window, &mut mouse) };
-            if (mouse.x - app.initial_mouse.x).abs() > 4
-                || (mouse.y - app.initial_mouse.y).abs() > 4
-            {
-                unsafe { PostMessageA(window, WM_CLOSE, 0, 0) };
+            let exceeded_dead_zone = with_fullscreen_input_target(|target| {
+                (mouse.x - target.initial_mouse.x).abs() > 4
+                    || (mouse.y - target.initial_mouse.y).abs() > 4
+            })
+            .unwrap_or(false);
+            if exceeded_dead_zone {
+                close_fullscreen_render_window();
             }
             0
         }
@@ -959,7 +1005,59 @@ unsafe fn register_window_class(instance: HINSTANCE, fullscreen: bool) -> bool {
     unsafe { RegisterClassExA(&class) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS }
 }
 
-unsafe fn create_window(instance: HINSTANCE, mode: RunMode, preview_parent: HWND) -> HWND {
+unsafe fn register_background_window_class(instance: HINSTANCE) -> bool {
+    let class = WNDCLASSEXA {
+        cbSize: std::mem::size_of::<WNDCLASSEXA>() as u32,
+        lpfnWndProc: Some(background_window_procedure),
+        hInstance: instance,
+        hbrBackground: unsafe { GetStockObject(BLACK_BRUSH) as HBRUSH },
+        lpszClassName: BACKGROUND_WINDOW_CLASS.as_ptr().cast(),
+        ..Default::default()
+    };
+    unsafe { RegisterClassExA(&class) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS }
+}
+
+unsafe extern "system" fn background_window_procedure(
+    window: HWND,
+    message: u32,
+    w_param: WPARAM,
+    l_param: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_SETCURSOR => {
+            unsafe { SetCursor(std::ptr::null_mut()) };
+            1
+        }
+        WM_KEYDOWN | WM_SYSKEYDOWN | WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
+            close_fullscreen_render_window();
+            0
+        }
+        WM_MOUSEMOVE => {
+            let mut mouse = POINT {
+                x: low_word_as_i16(l_param),
+                y: high_word_as_i16(l_param),
+            };
+            unsafe { ClientToScreen(window, &mut mouse) };
+            let exceeded_dead_zone = with_fullscreen_input_target(|target| {
+                (mouse.x - target.initial_mouse.x).abs() > 4
+                    || (mouse.y - target.initial_mouse.y).abs() > 4
+            })
+            .unwrap_or(false);
+            if exceeded_dead_zone {
+                close_fullscreen_render_window();
+            }
+            0
+        }
+        _ => unsafe { DefWindowProcA(window, message, w_param, l_param) },
+    }
+}
+
+unsafe fn create_window(
+    instance: HINSTANCE,
+    mode: RunMode,
+    preview_parent: HWND,
+    fullscreen_bounds: DisplayBounds,
+) -> HWND {
     let (style, ex_style, x, y, width, height, parent) = match mode {
         RunMode::Preview => {
             let mut rect = RECT::default();
@@ -985,11 +1083,11 @@ unsafe fn create_window(instance: HINSTANCE, mode: RunMode, preview_parent: HWND
         ),
         RunMode::Fullscreen => (
             WS_POPUP,
-            WS_EX_TOPMOST,
-            unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) },
-            unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) },
-            unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) },
-            unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) },
+            WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            fullscreen_bounds.x,
+            fullscreen_bounds.y,
+            fullscreen_bounds.width,
+            fullscreen_bounds.height,
             std::ptr::null_mut(),
         ),
     };
@@ -1015,6 +1113,87 @@ unsafe fn create_window(instance: HINSTANCE, mode: RunMode, preview_parent: HWND
     }
 }
 
+unsafe fn create_background_window(instance: HINSTANCE, bounds: DisplayBounds) -> HWND {
+    unsafe {
+        CreateWindowExA(
+            WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+            BACKGROUND_WINDOW_CLASS.as_ptr().cast(),
+            WINDOW_TITLE.as_ptr().cast(),
+            WS_POPUP,
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            instance,
+            std::ptr::null(),
+        )
+    }
+}
+
+unsafe fn enumerate_display_monitors() -> Option<Vec<DisplayMonitor>> {
+    let mut monitors = Vec::new();
+    let completed = unsafe {
+        EnumDisplayMonitors(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            Some(collect_display_monitor),
+            (&mut monitors as *mut Vec<DisplayMonitor>) as isize,
+        )
+    } != 0;
+    (completed && !monitors.is_empty()).then_some(monitors)
+}
+
+unsafe extern "system" fn collect_display_monitor(
+    monitor: HMONITOR,
+    _: HDC,
+    _: *mut RECT,
+    data: LPARAM,
+) -> i32 {
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetMonitorInfoA(monitor, &mut info) } == 0 {
+        return 0;
+    }
+    let width = info.rcMonitor.right - info.rcMonitor.left;
+    let height = info.rcMonitor.bottom - info.rcMonitor.top;
+    if width <= 0 || height <= 0 {
+        return 1;
+    }
+    let monitors = unsafe { &mut *(data as *mut Vec<DisplayMonitor>) };
+    monitors.push(DisplayMonitor {
+        bounds: DisplayBounds {
+            x: info.rcMonitor.left,
+            y: info.rcMonitor.top,
+            width,
+            height,
+        },
+        is_primary: info.dwFlags & MONITORINFOF_PRIMARY != 0,
+    });
+    1
+}
+
+fn primary_display(monitors: &[DisplayMonitor]) -> DisplayMonitor {
+    monitors
+        .iter()
+        .copied()
+        .find(|monitor| monitor.is_primary)
+        .unwrap_or(monitors[0])
+}
+
+fn background_display_bounds(
+    monitors: &[DisplayMonitor],
+    render_bounds: DisplayBounds,
+) -> Vec<DisplayBounds> {
+    monitors
+        .iter()
+        .filter_map(|monitor| (monitor.bounds != render_bounds).then_some(monitor.bounds))
+        .collect()
+}
+
 pub unsafe fn run(command: Command) -> i32 {
     let (mode, preview_parent) = match command {
         Command::Fullscreen | Command::Debug => (RunMode::Fullscreen, std::ptr::null_mut()),
@@ -1032,7 +1211,26 @@ pub unsafe fn run(command: Command) -> i32 {
         );
         return 1;
     }
-    let window = unsafe { create_window(instance, mode, preview_parent) };
+    let monitors = if mode == RunMode::Fullscreen {
+        match unsafe { enumerate_display_monitors() } {
+            Some(monitors) => monitors,
+            None => {
+                show_message(
+                    c"Could not identify a display for Slowfield.",
+                    MB_OK | MB_ICONERROR,
+                );
+                return 1;
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let render_bounds = if mode == RunMode::Fullscreen {
+        primary_display(&monitors).bounds
+    } else {
+        DisplayBounds::default()
+    };
+    let window = unsafe { create_window(instance, mode, preview_parent, render_bounds) };
     if window.is_null() {
         show_message(
             c"Could not create the Slowfield window.",
@@ -1040,10 +1238,41 @@ pub unsafe fn run(command: Command) -> i32 {
         );
         return 1;
     }
+    let mut background_windows = Vec::new();
+    if mode == RunMode::Fullscreen {
+        if !unsafe { register_background_window_class(instance) } {
+            unsafe { DestroyWindow(window) };
+            show_message(
+                c"Could not register the Slowfield background window class.",
+                MB_OK | MB_ICONERROR,
+            );
+            return 1;
+        }
+        for bounds in background_display_bounds(&monitors, render_bounds) {
+            let background = unsafe { create_background_window(instance, bounds) };
+            if background.is_null() {
+                for background in background_windows {
+                    unsafe { DestroyWindow(background) };
+                }
+                unsafe { DestroyWindow(window) };
+                show_message(
+                    c"Could not create a Slowfield background window.",
+                    MB_OK | MB_ICONERROR,
+                );
+                return 1;
+            }
+            background_windows.push(background);
+        }
+        initialize_fullscreen_input_target(window);
+    }
     let config = load_config();
     let (scene_id, launch_seed) = match choose_scene(config.launch_selection) {
         Ok(selection) => selection,
         Err(error) => {
+            for background in background_windows {
+                unsafe { DestroyWindow(background) };
+            }
+            clear_fullscreen_input_target();
             unsafe { DestroyWindow(window) };
             show_error(&error.to_string());
             return 1;
@@ -1059,6 +1288,10 @@ pub unsafe fn run(command: Command) -> i32 {
     let app = match unsafe { App::create(window, mode, scene) } {
         Ok(app) => app,
         Err(message) => {
+            for background in background_windows {
+                unsafe { DestroyWindow(background) };
+            }
+            clear_fullscreen_input_target();
             unsafe { DestroyWindow(window) };
             show_error(&message);
             return 1;
@@ -1071,6 +1304,10 @@ pub unsafe fn run(command: Command) -> i32 {
     unsafe { timeBeginPeriod(1) };
     unsafe { SetTimer(window, FRAME_TIMER_ID, FRAME_INTERVAL_MS, None) };
     unsafe {
+        for background in &background_windows {
+            ShowWindow(*background, SW_SHOWNOACTIVATE);
+            UpdateWindow(*background);
+        }
         ShowWindow(
             window,
             if mode == RunMode::Fullscreen {
@@ -1095,6 +1332,10 @@ pub unsafe fn run(command: Command) -> i32 {
             unsafe { app.destroy() };
         }
     });
+    for background in background_windows {
+        unsafe { DestroyWindow(background) };
+    }
+    clear_fullscreen_input_target();
     unsafe { timeEndPeriod(1) };
     0
 }
@@ -1460,6 +1701,50 @@ fn show_message(text: &CStr, flags: u32) {
             text.as_ptr().cast(),
             WINDOW_TITLE.as_ptr().cast(),
             flags,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DisplayBounds, DisplayMonitor, background_display_bounds, primary_display};
+
+    fn display(x: i32, is_primary: bool) -> DisplayMonitor {
+        DisplayMonitor {
+            bounds: DisplayBounds {
+                x,
+                y: 0,
+                width: 1_920,
+                height: 1_080,
+            },
+            is_primary,
+        }
+    }
+
+    #[test]
+    fn primary_display_prefers_the_display_flagged_by_windows() {
+        assert_eq!(
+            primary_display(&[display(-1_920, false), display(0, true)]),
+            display(0, true)
+        );
+    }
+
+    #[test]
+    fn primary_display_falls_back_to_the_first_display() {
+        assert_eq!(
+            primary_display(&[display(-1_920, false), display(0, false)]),
+            display(-1_920, false)
+        );
+    }
+
+    #[test]
+    fn only_non_rendering_displays_receive_background_windows() {
+        let primary = display(0, true);
+        let left = display(-1_920, false);
+        let right = display(1_920, false);
+        assert_eq!(
+            background_display_bounds(&[left, primary, right], primary.bounds),
+            vec![left.bounds, right.bounds]
         );
     }
 }

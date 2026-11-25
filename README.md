@@ -16,6 +16,10 @@ The working default chooses one available field randomly at launch. The native
 migrated Gravity/Flock controls. The first consolidation release does not
 change fields during an active saver session.
 
+In full-screen saver mode, Slowfield renders on the Windows primary display.
+Every other display is covered by a black, topmost background window; no second
+OpenGL context or renderer is created for those displays.
+
 ## Status
 
 The repository is in a controlled migration. The active product source is the
