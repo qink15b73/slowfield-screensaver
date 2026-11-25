@@ -29,6 +29,12 @@ const CONFIG_KEY: &CStr = c"Software\\Qink\\Slowfield";
 const CONFIG_SCHEMA_VALUE: &CStr = c"ConfigSchemaVersion";
 const CONFIG_SELECTION_VALUE: &CStr = c"LaunchSelection";
 const CONFIG_SCHEMA_VERSION: u32 = 1;
+const WGL_CONTEXT_MAJOR_VERSION_ARB: i32 = 0x2091;
+const WGL_CONTEXT_MINOR_VERSION_ARB: i32 = 0x2092;
+const WGL_CONTEXT_PROFILE_MASK_ARB: i32 = 0x9126;
+const WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB: i32 = 0x0000_0002;
+
+type WglCreateContextAttribsArb = unsafe extern "system" fn(HDC, HGLRC, *const i32) -> HGLRC;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunMode {
@@ -80,7 +86,7 @@ impl App {
             return Err(c"Could not configure an OpenGL pixel format.");
         }
 
-        let render_context = unsafe { wglCreateContext(device_context) };
+        let mut render_context = unsafe { wglCreateContext(device_context) };
         if render_context.is_null()
             || unsafe { wglMakeCurrent(device_context, render_context) } == 0
         {
@@ -94,6 +100,35 @@ impl App {
         unsafe {
             glDisable(GL_DEPTH_TEST);
             glDisable(GL_CULL_FACE);
+        }
+        // Prime and Flock initially use compatibility drawing. Gravity needs
+        // GLSL 330. A compatibility-profile upgrade lets both coexist in one
+        // context. Drivers that do not expose this WGL extension retain the
+        // legacy context; Gravity will stay unavailable until it can report a
+        // precise capability failure rather than silently changing renderer.
+        if let Some(create_context) = unsafe { wgl_create_context_attribs() } {
+            let attributes = [
+                WGL_CONTEXT_MAJOR_VERSION_ARB,
+                3,
+                WGL_CONTEXT_MINOR_VERSION_ARB,
+                3,
+                WGL_CONTEXT_PROFILE_MASK_ARB,
+                WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB,
+                0,
+            ];
+            let upgraded_context = unsafe {
+                create_context(device_context, std::ptr::null_mut(), attributes.as_ptr())
+            };
+            if !upgraded_context.is_null() {
+                unsafe { wglMakeCurrent(std::ptr::null_mut(), std::ptr::null_mut()) };
+                unsafe { wglDeleteContext(render_context) };
+                render_context = upgraded_context;
+                if unsafe { wglMakeCurrent(device_context, render_context) } == 0 {
+                    unsafe { wglDeleteContext(render_context) };
+                    unsafe { ReleaseDC(window, device_context) };
+                    return Err(c"Could not activate the OpenGL compatibility context.");
+                }
+            }
         }
         let mut initial_mouse = POINT::default();
         unsafe { GetCursorPos(&mut initial_mouse) };
@@ -140,6 +175,20 @@ impl App {
             self.device_context = std::ptr::null_mut();
         }
     }
+}
+
+unsafe fn wgl_create_context_attribs() -> Option<WglCreateContextAttribsArb> {
+    let procedure = unsafe { wglGetProcAddress(c"wglCreateContextAttribsARB".as_ptr().cast()) }?;
+    let address = procedure as usize;
+    if matches!(address, 1..=3) || address == usize::MAX {
+        return None;
+    }
+    // WGL documents this extension entry point with this exact ABI.
+    Some(unsafe {
+        std::mem::transmute::<unsafe extern "system" fn() -> isize, WglCreateContextAttribsArb>(
+            procedure,
+        )
+    })
 }
 
 thread_local! {
