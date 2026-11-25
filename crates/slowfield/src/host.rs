@@ -10,6 +10,9 @@ use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, GetDC, HDC, ReleaseDC, U
 use windows_sys::Win32::Graphics::OpenGL::*;
 use windows_sys::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleA;
+use windows_sys::Win32::System::Registry::{
+    HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD, RegCloseKey, RegOpenKeyExA, RegQueryValueExA,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 const ERROR_CLASS_ALREADY_EXISTS: u32 = 1410;
@@ -22,6 +25,10 @@ const FRAME_TIMER_ID: usize = 1;
 const FRAME_INTERVAL_MS: u32 = 4;
 const ADJUSTMENT_WIDTH: i32 = 1120;
 const ADJUSTMENT_HEIGHT: i32 = 760;
+const CONFIG_KEY: &CStr = c"Software\\Qink\\Slowfield";
+const CONFIG_SCHEMA_VALUE: &CStr = c"ConfigSchemaVersion";
+const CONFIG_SELECTION_VALUE: &CStr = c"LaunchSelection";
+const CONFIG_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunMode {
@@ -393,7 +400,55 @@ fn choose_scene() -> Result<SceneId, slowfield_core::SceneSelectionError> {
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos() as u64);
-    select_scene(LaunchSelection::Random, available_scenes(), seed)
+    select_scene(load_launch_selection(), available_scenes(), seed)
+}
+
+/// Loads only a fully-recognized Slowfield schema. Missing, interrupted,
+/// future, wrong-typed, or unknown values preserve the product default:
+/// choose an available field randomly. The reader is intentionally side-effect
+/// free; first-run defaults are saved only by the future settings UI.
+fn load_launch_selection() -> LaunchSelection {
+    let mut key: HKEY = std::ptr::null_mut();
+    if unsafe {
+        RegOpenKeyExA(
+            HKEY_CURRENT_USER,
+            CONFIG_KEY.as_ptr().cast(),
+            0,
+            KEY_READ,
+            &mut key,
+        )
+    } != 0
+    {
+        return LaunchSelection::Random;
+    }
+    let selection = (|| {
+        let schema = unsafe { read_registry_dword(key, CONFIG_SCHEMA_VALUE) }?;
+        if schema != CONFIG_SCHEMA_VERSION {
+            return None;
+        }
+        let stored_selection = unsafe { read_registry_dword(key, CONFIG_SELECTION_VALUE) }?;
+        LaunchSelection::from_storage(stored_selection)
+    })();
+    unsafe { RegCloseKey(key) };
+    selection.unwrap_or(LaunchSelection::Random)
+}
+
+unsafe fn read_registry_dword(key: HKEY, name: &CStr) -> Option<u32> {
+    let mut value_type = 0;
+    let mut value = 0_u32;
+    let mut byte_count = std::mem::size_of::<u32>() as u32;
+    let result = unsafe {
+        RegQueryValueExA(
+            key,
+            name.as_ptr().cast(),
+            std::ptr::null(),
+            &mut value_type,
+            (&mut value as *mut u32).cast(),
+            &mut byte_count,
+        )
+    };
+    (result == 0 && value_type == REG_DWORD && byte_count == std::mem::size_of::<u32>() as u32)
+        .then_some(value)
 }
 
 fn show_message(text: &CStr, flags: u32) {

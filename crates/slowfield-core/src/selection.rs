@@ -18,6 +18,23 @@ impl SceneId {
             Self::Flock => "Flock Field",
         }
     }
+
+    pub const fn storage_value(self) -> u32 {
+        match self {
+            Self::Prime => 1,
+            Self::Gravity => 2,
+            Self::Flock => 3,
+        }
+    }
+
+    pub const fn from_storage(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::Prime),
+            2 => Some(Self::Gravity),
+            3 => Some(Self::Flock),
+            _ => None,
+        }
+    }
 }
 
 /// The persisted user intent for choosing the field at process startup.
@@ -25,6 +42,28 @@ impl SceneId {
 pub enum LaunchSelection {
     Random,
     Fixed(SceneId),
+}
+
+impl LaunchSelection {
+    /// `0` is deliberately random so an uninitialized registry DWORD and an
+    /// explicit default have identical, safe behavior. Unknown values return
+    /// `None` so the configuration layer can reject a partial/future schema.
+    pub const fn from_storage(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Random),
+            value => match SceneId::from_storage(value) {
+                Some(scene) => Some(Self::Fixed(scene)),
+                None => None,
+            },
+        }
+    }
+
+    pub const fn storage_value(self) -> u32 {
+        match self {
+            Self::Random => 0,
+            Self::Fixed(scene) => scene.storage_value(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,5 +151,25 @@ mod tests {
             select_scene(LaunchSelection::Random, &[], 3),
             Err(SceneSelectionError::NoAvailableScenes)
         );
+    }
+
+    #[test]
+    fn persisted_selection_values_round_trip() {
+        for selection in [
+            LaunchSelection::Random,
+            LaunchSelection::Fixed(SceneId::Prime),
+            LaunchSelection::Fixed(SceneId::Gravity),
+            LaunchSelection::Fixed(SceneId::Flock),
+        ] {
+            assert_eq!(
+                LaunchSelection::from_storage(selection.storage_value()),
+                Some(selection)
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_persisted_selection_is_rejected() {
+        assert_eq!(LaunchSelection::from_storage(99), None);
     }
 }
