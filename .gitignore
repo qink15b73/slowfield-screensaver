@@ -4,6 +4,7 @@
 *.exe
 *.scr
 /target/
+/bin/
 
 # Imported, reproducible legacy build output.
 /legacy/boids-screensaver/bin/
