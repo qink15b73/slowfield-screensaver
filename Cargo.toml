@@ -1,0 +1,15 @@
+[workspace]
+members = [
+    "crates/slowfield-core",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Slowfield contributors"]
+repository = "https://github.com/qink15b73/slowfield-screensaver"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

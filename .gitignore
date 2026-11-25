@@ -3,6 +3,7 @@
 *.log
 *.exe
 *.scr
+/target/
 
 # Imported, reproducible legacy build output.
 /legacy/boids-screensaver/bin/
