@@ -1,5 +1,6 @@
+mod prime;
+
 use slowfield_core::SceneId;
-use windows_sys::Win32::Graphics::OpenGL::{GL_COLOR_BUFFER_BIT, glClear, glClearColor};
 
 /// Pixel dimensions supplied by the host after every window resize.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,53 +29,14 @@ pub trait Scene {
 }
 
 pub fn available_scenes() -> &'static [SceneId] {
-    // Prime Field is the first field to move behind the shared host. The
-    // diagnostic implementation below occupies that selection until its visual
-    // renderer lands, so random selection already has the final policy shape.
     &[SceneId::Prime]
 }
 
-pub fn create_scene(scene: SceneId) -> Box<dyn Scene> {
-    Box::new(DiagnosticScene::new(scene))
-}
-
-struct DiagnosticScene {
-    scene: SceneId,
-    viewport: Viewport,
-}
-
-impl DiagnosticScene {
-    fn new(scene: SceneId) -> Self {
-        Self {
-            scene,
-            viewport: Viewport {
-                width: 1,
-                height: 1,
-            },
-        }
-    }
-}
-
-impl Scene for DiagnosticScene {
-    fn resize(&mut self, viewport: Viewport) {
-        self.viewport = viewport;
-    }
-
-    unsafe fn render(&mut self, frame: Frame) {
-        let motion = 0.5 + 0.5 * (frame.elapsed_seconds * 0.45).sin();
-        let aspect = self.viewport.width as f32 / self.viewport.height.max(1) as f32;
-        let (red, green, blue) = match self.scene {
-            SceneId::Prime => (
-                0.008 + motion * 0.010,
-                0.040 + aspect * 0.002,
-                0.090 + motion * 0.025,
-            ),
-            SceneId::Gravity => (0.012 + motion * 0.015, 0.004, 0.020 + motion * 0.010),
-            SceneId::Flock => (0.002, 0.025 + motion * 0.020, 0.030 + motion * 0.020),
-        };
-        unsafe {
-            glClearColor(red, green, blue, 1.0);
-            glClear(GL_COLOR_BUFFER_BIT);
-        }
+pub fn create_scene(scene: SceneId, preview: bool) -> Box<dyn Scene> {
+    match scene {
+        SceneId::Prime => Box::new(prime::PrimeScene::new(preview)),
+        // These variants cannot be selected until their migrations make them
+        // available. Keeping the match exhaustive makes that dependency clear.
+        SceneId::Gravity | SceneId::Flock => unreachable!("unavailable scene selected"),
     }
 }

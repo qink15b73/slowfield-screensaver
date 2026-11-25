@@ -331,7 +331,7 @@ pub unsafe fn run(command: Command) -> i32 {
         return 1;
     }
     let scene = match choose_scene() {
-        Ok(scene) => create_scene(scene),
+        Ok(scene) => create_scene(scene, mode == RunMode::Preview),
         Err(error) => {
             unsafe { DestroyWindow(window) };
             show_error(&error.to_string());
