@@ -501,8 +501,10 @@ impl FlockSimulation {
     }
 
     fn prey_neighbors(&self, index: usize, boid: Boid) -> (Vec2, Vec2, Vec2, NeighborCounts) {
-        let center_cell_x = (boid.position.x / self.cell_size) as i32;
-        let center_cell_y = (boid.position.y / self.cell_size) as i32;
+        let center_cell_x =
+            ((boid.position.x / self.cell_size) as i32).clamp(0, self.grid_width - 1);
+        let center_cell_y =
+            ((boid.position.y / self.cell_size) as i32).clamp(0, self.grid_height - 1);
         let cells_to_scan_x = if self.settings.wrap_edges {
             self.grid_width.min(PREY_CELL_RANGE * 2 + 1)
         } else {
@@ -857,13 +859,17 @@ impl FlockScene {
 }
 
 impl Scene for FlockScene {
+    unsafe fn activate(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     fn resize(&mut self, viewport: Viewport) {
         self.viewport = viewport;
         self.simulation
             .resize(viewport.width.max(1) as f32, viewport.height.max(1) as f32);
     }
 
-    unsafe fn render(&mut self, frame: Frame) {
+    unsafe fn render(&mut self, frame: Frame) -> bool {
         let elapsed = (frame.elapsed_seconds - self.last_elapsed_seconds).clamp(0.0, 0.25);
         self.last_elapsed_seconds = frame.elapsed_seconds;
         self.accumulator_seconds += elapsed;
@@ -871,20 +877,20 @@ impl Scene for FlockScene {
             self.simulation.step(1.0 / 60.0);
             self.accumulator_seconds -= 1.0 / 60.0;
         }
-        let width = self.viewport.width as f32;
-        let height = self.viewport.height as f32;
+        let width = self.viewport.width as f64;
+        let height = self.viewport.height as f64;
         unsafe {
             glViewport(0, 0, self.viewport.width, self.viewport.height);
             glMatrixMode(GL_PROJECTION);
             glLoadIdentity();
-            glOrtho(0.0, width as f64, height as f64, 0.0, -1.0, 1.0);
+            glOrtho(0.0, width, height, 0.0, -1.0, 1.0);
             glMatrixMode(GL_MODELVIEW);
             glLoadIdentity();
             glDisable(GL_BLEND);
             glClearColor(0.01, 0.02, 0.05, 1.0);
             glClear(GL_COLOR_BUFFER_BIT);
-            glBegin(GL_TRIANGLES);
             let settings = self.simulation.settings();
+            glBegin(GL_TRIANGLES);
             for boid in self.simulation.boids().iter().copied() {
                 if boid.is_predator {
                     glColor3f(0.96, 0.20, 0.16);
@@ -897,7 +903,14 @@ impl Scene for FlockScene {
             }
             glEnd();
         }
+        true
     }
+
+    unsafe fn prepare_present(&mut self, _frame: Frame) {}
+
+    unsafe fn presented(&mut self, _frame: Frame, _succeeded: bool) {}
+
+    unsafe fn deactivate(&mut self) {}
 }
 
 #[cfg(test)]
@@ -1006,6 +1019,24 @@ mod tests {
         }
         assert_eq!(first.boids(), second.boids());
         assert_valid(&first);
+    }
+
+    #[test]
+    fn wrapped_small_grids_do_not_scan_one_cell_more_than_once() {
+        let settings = FlockSettings {
+            wrap_edges: true,
+            initial_predator_count: 0,
+            max_sampled_prey_candidates: 96,
+            ..FlockSettings::default()
+        };
+        let mut simulation = FlockSimulation::new(120.0, 120.0, settings, 0x52);
+        for _ in 0..1_000 {
+            simulation.step(STEP);
+            assert_eq!(
+                simulation.boids().len(),
+                settings.initial_flock_size as usize
+            );
+        }
     }
 
     #[test]

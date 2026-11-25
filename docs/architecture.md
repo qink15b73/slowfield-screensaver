@@ -19,12 +19,18 @@ A scene is selected before rendering and has a bounded lifecycle:
 5. the host deactivates the scene and releases its resources before context
    teardown or a later scene change.
 
+The host temporarily removes its app state from thread-local storage before
+calling Win32 or OpenGL entry points. This permits drivers to synchronously
+dispatch nested window messages during presentation without re-borrowing the
+same Rust state.
+
 Initial scenes are Prime Field, Gravity Field, and Flock Field. New fields must
 fit the same contract and keep all resource ownership inside the one process.
 
-Prime Field and Flock Field have entered the shared host. Gravity Field stays
-unavailable to the selection policy until its GLSL program, scene catalogue,
-and GPU back-pressure policy have been migrated.
+Prime Field, Gravity Field, and Flock Field have entered the shared host.
+Gravity's canonical GLSL fragment program is embedded at compile time; its
+finite 864-scene catalogue advances every 45 seconds and its renderer owns a
+one-frame-in-flight GPU back-pressure policy.
 
 The former standalone implementations are isolated under `legacy/`. They are
 read-only behavior references, never child applications or fallback builds.

@@ -60,14 +60,10 @@ struct App {
 }
 
 impl App {
-    unsafe fn create(
-        window: HWND,
-        mode: RunMode,
-        scene: Box<dyn Scene>,
-    ) -> Result<Self, &'static CStr> {
+    unsafe fn create(window: HWND, mode: RunMode, scene: Box<dyn Scene>) -> Result<Self, String> {
         let device_context = unsafe { GetDC(window) };
         if device_context.is_null() {
-            return Err(c"Could not acquire a drawing surface.");
+            return Err("Could not acquire a drawing surface.".into());
         }
 
         let descriptor = PIXELFORMATDESCRIPTOR {
@@ -83,7 +79,7 @@ impl App {
         let format = unsafe { ChoosePixelFormat(device_context, &descriptor) };
         if format == 0 || unsafe { SetPixelFormat(device_context, format, &descriptor) } == 0 {
             unsafe { ReleaseDC(window, device_context) };
-            return Err(c"Could not configure an OpenGL pixel format.");
+            return Err("Could not configure an OpenGL pixel format.".into());
         }
 
         let mut render_context = unsafe { wglCreateContext(device_context) };
@@ -94,41 +90,47 @@ impl App {
                 unsafe { wglDeleteContext(render_context) };
             }
             unsafe { ReleaseDC(window, device_context) };
-            return Err(c"Could not create an OpenGL rendering context.");
+            return Err("Could not create an OpenGL rendering context.".into());
         }
 
         unsafe {
             glDisable(GL_DEPTH_TEST);
             glDisable(GL_CULL_FACE);
         }
-        // Prime and Flock initially use compatibility drawing. Gravity needs
-        // GLSL 330. A compatibility-profile upgrade lets both coexist in one
-        // context. Drivers that do not expose this WGL extension retain the
-        // legacy context; Gravity will stay unavailable until it can report a
-        // precise capability failure rather than silently changing renderer.
-        if let Some(create_context) = unsafe { wgl_create_context_attribs() } {
-            let attributes = [
-                WGL_CONTEXT_MAJOR_VERSION_ARB,
-                3,
-                WGL_CONTEXT_MINOR_VERSION_ARB,
-                3,
-                WGL_CONTEXT_PROFILE_MASK_ARB,
-                WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB,
-                0,
-            ];
-            let upgraded_context = unsafe {
-                create_context(device_context, std::ptr::null_mut(), attributes.as_ptr())
-            };
-            if !upgraded_context.is_null() {
-                unsafe { wglMakeCurrent(std::ptr::null_mut(), std::ptr::null_mut()) };
-                unsafe { wglDeleteContext(render_context) };
-                render_context = upgraded_context;
-                if unsafe { wglMakeCurrent(device_context, render_context) } == 0 {
-                    unsafe { wglDeleteContext(render_context) };
-                    unsafe { ReleaseDC(window, device_context) };
-                    return Err(c"Could not activate the OpenGL compatibility context.");
-                }
-            }
+        // Every released field shares this baseline: Prime/Flock use legacy
+        // compatibility drawing while Gravity requires GLSL 330. Failing
+        // early prevents a random Gravity selection becoming an opaque shader
+        // failure on a driver that cannot create the required context.
+        let Some(create_context) = (unsafe { wgl_create_context_attribs() }) else {
+            unsafe { wglMakeCurrent(std::ptr::null_mut(), std::ptr::null_mut()) };
+            unsafe { wglDeleteContext(render_context) };
+            unsafe { ReleaseDC(window, device_context) };
+            return Err("Slowfield requires an OpenGL 3.3 compatibility context.".into());
+        };
+        let attributes = [
+            WGL_CONTEXT_MAJOR_VERSION_ARB,
+            3,
+            WGL_CONTEXT_MINOR_VERSION_ARB,
+            3,
+            WGL_CONTEXT_PROFILE_MASK_ARB,
+            WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB,
+            0,
+        ];
+        let upgraded_context =
+            unsafe { create_context(device_context, std::ptr::null_mut(), attributes.as_ptr()) };
+        if upgraded_context.is_null() {
+            unsafe { wglMakeCurrent(std::ptr::null_mut(), std::ptr::null_mut()) };
+            unsafe { wglDeleteContext(render_context) };
+            unsafe { ReleaseDC(window, device_context) };
+            return Err("Slowfield requires an OpenGL 3.3 compatibility context.".into());
+        }
+        unsafe { wglMakeCurrent(std::ptr::null_mut(), std::ptr::null_mut()) };
+        unsafe { wglDeleteContext(render_context) };
+        render_context = upgraded_context;
+        if unsafe { wglMakeCurrent(device_context, render_context) } == 0 {
+            unsafe { wglDeleteContext(render_context) };
+            unsafe { ReleaseDC(window, device_context) };
+            return Err("Could not activate the OpenGL compatibility context.".into());
         }
         let mut initial_mouse = POINT::default();
         unsafe { GetCursorPos(&mut initial_mouse) };
@@ -141,6 +143,12 @@ impl App {
             launch: Instant::now(),
             scene,
         };
+        if let Err(error) = unsafe { app.scene.activate() } {
+            unsafe { wglMakeCurrent(std::ptr::null_mut(), std::ptr::null_mut()) };
+            unsafe { wglDeleteContext(render_context) };
+            unsafe { ReleaseDC(window, device_context) };
+            return Err(error);
+        }
         unsafe { app.resize() };
         Ok(app)
     }
@@ -160,11 +168,18 @@ impl App {
         let frame = Frame {
             elapsed_seconds: self.launch.elapsed().as_secs_f32(),
         };
-        unsafe { self.scene.render(frame) };
-        unsafe { SwapBuffers(self.device_context) };
+        if unsafe { self.scene.render(frame) } {
+            unsafe { self.scene.prepare_present(frame) };
+            let succeeded = unsafe { SwapBuffers(self.device_context) } != 0;
+            let presented_frame = Frame {
+                elapsed_seconds: self.launch.elapsed().as_secs_f32(),
+            };
+            unsafe { self.scene.presented(presented_frame, succeeded) };
+        }
     }
 
     unsafe fn destroy(&mut self) {
+        unsafe { self.scene.deactivate() };
         unsafe { wglMakeCurrent(std::ptr::null_mut(), std::ptr::null_mut()) };
         if !self.render_context.is_null() {
             unsafe { wglDeleteContext(self.render_context) };
@@ -195,6 +210,22 @@ thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
 }
 
+/// Runs a window-message action without retaining a `RefCell` borrow across
+/// Win32 or OpenGL calls. `SwapBuffers` can synchronously dispatch nested
+/// messages on some drivers; keeping `App` in the slot during that work would
+/// otherwise turn a legitimate nested message into a `RefCell` panic.
+fn with_app<T>(action: impl FnOnce(&mut App) -> T) -> Option<T> {
+    APP.with(|slot| {
+        let mut app = { slot.borrow_mut().take()? };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| action(&mut app)));
+        *slot.borrow_mut() = Some(app);
+        match outcome {
+            Ok(value) => Some(value),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    })
+}
+
 pub fn show_configuration() -> i32 {
     show_message(
         c"Slowfield\n\nA quiet collection of slow generative fields.\n\nThe configuration UI will arrive with the shared settings schema. For now, Slowfield selects its available field at launch.\n\nRun modes:\n  /s  full-screen saver\n  /p <HWND>  control-panel preview\n  /w  resizable diagnostic preview\n  /d  full-screen debug view",
@@ -223,6 +254,27 @@ unsafe extern "system" fn window_procedure(
     w_param: WPARAM,
     l_param: LPARAM,
 ) -> LRESULT {
+    // A panic may not cross the Win32 ABI boundary. The scene is intentionally
+    // best-effort during a saver session: if a renderer fails, close the
+    // window cleanly instead of invoking Rust's aborting panic guard.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        window_procedure_impl(window, message, w_param, l_param)
+    }));
+    match result {
+        Ok(result) => result,
+        Err(_) => {
+            unsafe { PostMessageA(window, WM_CLOSE, 0, 0) };
+            0
+        }
+    }
+}
+
+unsafe fn window_procedure_impl(
+    window: HWND,
+    message: u32,
+    w_param: WPARAM,
+    l_param: LPARAM,
+) -> LRESULT {
     match message {
         WM_CLOSE => {
             unsafe { DestroyWindow(window) };
@@ -237,46 +289,43 @@ unsafe extern "system" fn window_procedure(
         _ => {}
     }
 
-    APP.with(|slot| {
-        let mut app = slot.borrow_mut();
-        let Some(app) = app.as_mut() else {
-            return unsafe { DefWindowProcA(window, message, w_param, l_param) };
-        };
-        match message {
-            WM_SIZE => {
-                unsafe { app.resize() };
-                0
-            }
-            WM_TIMER if w_param == FRAME_TIMER_ID => {
-                unsafe { app.render() };
-                0
-            }
-            WM_SETCURSOR if app.mode == RunMode::Fullscreen => {
-                unsafe { SetCursor(std::ptr::null_mut()) };
-                1
-            }
-            WM_KEYDOWN | WM_SYSKEYDOWN | WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN
-                if app.mode.exits_on_input() =>
+    let Some(result) = with_app(|app| match message {
+        WM_SIZE => {
+            unsafe { app.resize() };
+            0
+        }
+        WM_TIMER if w_param == FRAME_TIMER_ID => {
+            unsafe { app.render() };
+            0
+        }
+        WM_SETCURSOR if app.mode == RunMode::Fullscreen => {
+            unsafe { SetCursor(std::ptr::null_mut()) };
+            1
+        }
+        WM_KEYDOWN | WM_SYSKEYDOWN | WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN
+            if app.mode.exits_on_input() =>
+        {
+            unsafe { PostMessageA(window, WM_CLOSE, 0, 0) };
+            0
+        }
+        WM_MOUSEMOVE if app.mode.exits_on_input() => {
+            let mut mouse = POINT {
+                x: low_word_as_i16(l_param),
+                y: high_word_as_i16(l_param),
+            };
+            unsafe { ClientToScreen(window, &mut mouse) };
+            if (mouse.x - app.initial_mouse.x).abs() > 4
+                || (mouse.y - app.initial_mouse.y).abs() > 4
             {
                 unsafe { PostMessageA(window, WM_CLOSE, 0, 0) };
-                0
             }
-            WM_MOUSEMOVE if app.mode.exits_on_input() => {
-                let mut mouse = POINT {
-                    x: low_word_as_i16(l_param),
-                    y: high_word_as_i16(l_param),
-                };
-                unsafe { ClientToScreen(window, &mut mouse) };
-                if (mouse.x - app.initial_mouse.x).abs() > 4
-                    || (mouse.y - app.initial_mouse.y).abs() > 4
-                {
-                    unsafe { PostMessageA(window, WM_CLOSE, 0, 0) };
-                }
-                0
-            }
-            _ => unsafe { DefWindowProcA(window, message, w_param, l_param) },
+            0
         }
-    })
+        _ => unsafe { DefWindowProcA(window, message, w_param, l_param) },
+    }) else {
+        return unsafe { DefWindowProcA(window, message, w_param, l_param) };
+    };
+    result
 }
 
 const fn low_word_as_i16(value: LPARAM) -> i32 {
@@ -386,19 +435,20 @@ pub unsafe fn run(command: Command) -> i32 {
         );
         return 1;
     }
-    let scene = match choose_scene() {
-        Ok(scene) => create_scene(scene, mode == RunMode::Preview),
+    let (scene_id, launch_seed) = match choose_scene() {
+        Ok(selection) => selection,
         Err(error) => {
             unsafe { DestroyWindow(window) };
             show_error(&error.to_string());
             return 1;
         }
     };
+    let scene = create_scene(scene_id, mode == RunMode::Preview, launch_seed);
     let app = match unsafe { App::create(window, mode, scene) } {
         Ok(app) => app,
         Err(message) => {
             unsafe { DestroyWindow(window) };
-            show_message(message, MB_OK | MB_ICONERROR);
+            show_error(&message);
             return 1;
         }
     };
@@ -419,11 +469,7 @@ pub unsafe fn run(command: Command) -> i32 {
         );
         UpdateWindow(window);
     }
-    APP.with(|slot| {
-        if let Some(app) = slot.borrow_mut().as_mut() {
-            unsafe { app.render() };
-        }
-    });
+    let _ = with_app(|app| unsafe { app.render() });
 
     let mut message = MSG::default();
     while unsafe { GetMessageA(&mut message, std::ptr::null_mut(), 0, 0) } > 0 {
@@ -445,11 +491,12 @@ fn hwnd_from(handle: WindowHandle) -> HWND {
     handle.raw() as usize as HWND
 }
 
-fn choose_scene() -> Result<SceneId, slowfield_core::SceneSelectionError> {
+fn choose_scene() -> Result<(SceneId, u32), slowfield_core::SceneSelectionError> {
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos() as u64);
     select_scene(load_launch_selection(), available_scenes(), seed)
+        .map(|scene| (scene, seed as u32))
 }
 
 /// Loads only a fully-recognized Slowfield schema. Missing, interrupted,

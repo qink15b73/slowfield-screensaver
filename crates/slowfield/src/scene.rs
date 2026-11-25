@@ -1,4 +1,5 @@
 mod flock;
+mod gravity;
 mod prime;
 
 use slowfield_core::SceneId;
@@ -21,23 +22,55 @@ pub struct Frame {
 /// process. This is intentionally narrow so each legacy renderer can migrate
 /// without taking platform ownership back from the host.
 pub trait Scene {
+    /// # Safety
+    ///
+    /// The caller must make the host's OpenGL context current on this thread.
+    unsafe fn activate(&mut self) -> Result<(), String>;
+
     fn resize(&mut self, viewport: Viewport);
 
     /// # Safety
     ///
     /// The caller must make the host's OpenGL context current on this thread.
-    unsafe fn render(&mut self, frame: Frame);
+    /// Returns whether the host should present the frame. A field may return
+    /// false to apply its own bounded submission policy without accumulating a
+    /// queue of expensive frames.
+    unsafe fn render(&mut self, frame: Frame) -> bool;
+
+    /// Called after drawing and immediately before the host presents. Fields
+    /// with GPU fences insert their fence here, preserving the ordering between
+    /// drawing and the host-owned buffer swap.
+    ///
+    /// # Safety
+    ///
+    /// The caller must make the host's OpenGL context current on this thread.
+    unsafe fn prepare_present(&mut self, frame: Frame);
+
+    /// Reports the result of a host-owned present. A field must release or
+    /// synchronously complete any prepared GPU work if the present failed.
+    ///
+    /// # Safety
+    ///
+    /// The caller must make the host's OpenGL context current on this thread.
+    unsafe fn presented(&mut self, frame: Frame, succeeded: bool);
+
+    /// # Safety
+    ///
+    /// The caller must make the host's OpenGL context current on this thread.
+    unsafe fn deactivate(&mut self);
 }
 
 pub fn available_scenes() -> &'static [SceneId] {
-    &[SceneId::Prime, SceneId::Flock]
+    &[SceneId::Prime, SceneId::Gravity, SceneId::Flock]
 }
 
-pub fn create_scene(scene: SceneId, preview: bool) -> Box<dyn Scene> {
+/// Creates one field from the host's one-per-launch random state. Fields may
+/// derive their internal composition from it, but never own process-wide random
+/// state themselves.
+pub fn create_scene(scene: SceneId, preview: bool, launch_seed: u32) -> Box<dyn Scene> {
     match scene {
         SceneId::Prime => Box::new(prime::PrimeScene::new(preview)),
         SceneId::Flock => Box::new(flock::FlockScene::new(preview)),
-        // Gravity Field is not advertised until its port supplies a scene.
-        SceneId::Gravity => unreachable!("unavailable scene selected"),
+        SceneId::Gravity => Box::new(gravity::GravityScene::new(preview, launch_seed)),
     }
 }

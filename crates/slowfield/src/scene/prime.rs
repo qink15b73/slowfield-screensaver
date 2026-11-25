@@ -345,11 +345,15 @@ impl PrimeScene {
 }
 
 impl Scene for PrimeScene {
+    unsafe fn activate(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     fn resize(&mut self, viewport: Viewport) {
         self.viewport = viewport;
     }
 
-    unsafe fn render(&mut self, frame: Frame) {
+    unsafe fn render(&mut self, frame: Frame) -> bool {
         self.advance_scene_if_needed(frame.elapsed_seconds);
         let scene_time = frame.elapsed_seconds - self.scene_started_at;
         let palette = PALETTES[self.scene_index % PALETTES.len()];
@@ -389,7 +393,14 @@ impl Scene for PrimeScene {
             });
             glDisable(GL_BLEND);
         }
+        true
     }
+
+    unsafe fn prepare_present(&mut self, _frame: Frame) {}
+
+    unsafe fn presented(&mut self, _frame: Frame, _succeeded: bool) {}
+
+    unsafe fn deactivate(&mut self) {}
 }
 
 fn project(point: (f32, f32), center: (f32, f32), scale: f32) -> (f32, f32) {

@@ -47,8 +47,9 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The shared Windows host now renders Prime Field and Flock Field. Gravity Field
-remains queued for a behavior-preserving Rust migration. `legacy/` contains
+The shared Windows host renders Prime Field, Gravity Field, and Flock Field.
+Gravity embeds its canonical GLSL source at build time, uses the migrated
+864-scene catalogue, and permits one GPU frame in flight. `legacy/` contains
 historical builds but is not a Slowfield entry point.
 
 ## Repository layout
