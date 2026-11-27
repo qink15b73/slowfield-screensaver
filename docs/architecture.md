@@ -24,13 +24,14 @@ calling Win32 or OpenGL entry points. This permits drivers to synchronously
 dispatch nested window messages during presentation without re-borrowing the
 same Rust state.
 
-Initial scenes are Prime Field, Gravity Field, and Flock Field. New fields must
-fit the same contract and keep all resource ownership inside the one process.
+Initial scenes are Prime Field, Gravity Field, Flock Field, and Boltzmann Field.
+New fields must fit the same contract and keep all resource ownership inside the
+one process.
 
-Prime Field, Gravity Field, and Flock Field have entered the shared host.
-Gravity's canonical GLSL fragment program is embedded at compile time; its
-finite 864-scene catalogue advances every 45 seconds and its renderer owns a
-one-frame-in-flight GPU back-pressure policy.
+Prime Field, Gravity Field, Flock Field, and Boltzmann Field have entered the
+shared host. Gravity's canonical GLSL fragment program is embedded at compile
+time; its finite 864-scene catalogue advances every 45 seconds and its renderer
+owns a one-frame-in-flight GPU back-pressure policy.
 
 The former standalone implementations are isolated under `legacy/`. They are
 read-only behavior references, never child applications or fallback builds.
@@ -51,6 +52,8 @@ scene to render identically:
 - Prime Field derives reveal and zoom directly from time; it performs no
   backlog catch-up.
 - Flock Field advances a bounded fixed 60 Hz simulation accumulator.
+- Boltzmann Field advances a capped fixed 60 Hz hard-disk simulation and bounds
+  its spatial-grid workload to 420 full-screen particles (120 in preview).
 - Gravity Field preserves one-frame-in-flight GPU fencing and skips work while
   the GPU is busy.
 

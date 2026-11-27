@@ -36,3 +36,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Boltzmann Field educational reference
+
+Boltzmann Field is independently implemented for this project. Its presentation
+is informed by the MIT-licensed interactive teaching companion
+[`ChengyuSheu/hilbert-sixth-lectures`](https://github.com/ChengyuSheu/hilbert-sixth-lectures),
+which explains the Deng--Hani--Ma hard-sphere work. No upstream source code,
+assets, or prose are included in Slowfield. The screen saver is a pedagogical
+finite hard-disk simulation, not a reproduction or numerical proof of that
+research.

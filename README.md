@@ -3,18 +3,21 @@
 *A quiet collection of slow generative fields for Windows.*
 
 Slowfield will become one self-contained Windows screen saver, `slowfield.scr`.
-It begins with three independent visual systems that are being consolidated into
+It begins with four independent visual systems that are being consolidated into
 one Rust application:
 
 - **Prime Field** — an Ulam-prime spiral whose spacing follows the continuous
   natural-number frontier.
 - **Gravity Field** — a procedural Schwarzschild-style black-hole scene.
 - **Flock Field** — a fixed-step predator/prey flocking simulation.
+- **Boltzmann Field** — a bounded hard-disk gas visualisation with velocity
+  statistics and coarse-grained entropy history.
 
 The working default chooses one available field randomly at launch. The native
 `/c` settings window permits choosing one fixed field and adjusting the
-migrated Gravity/Flock controls. The first consolidation release does not
-change fields during an active saver session.
+migrated Gravity/Flock controls. Boltzmann Field has no user-exposed controls:
+it bounds its particle workload internally. The first consolidation release
+does not change fields during an active saver session.
 
 In full-screen saver mode, Slowfield renders on the Windows primary display.
 Every other display is covered by a black, topmost background window; no second
@@ -26,7 +29,7 @@ per-monitor DPI aware so these windows align with mixed-scaling displays.
 The repository is in a controlled migration. The active product source is the
 Rust workspace. The original Prime Field, Gravity Field, and Flock Field
 implementations now live under `legacy/` only as behavior references; they are
-not built or shipped by Slowfield.
+not built or shipped by Slowfield. Boltzmann Field is a native Slowfield scene.
 
 The detailed migration sequence is tracked in
 [issue #1](https://github.com/qink15b73/slowfield-screensaver/issues/1).
@@ -52,7 +55,12 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The shared Windows host renders Prime Field, Gravity Field, and Flock Field.
+The shared Windows host renders Prime Field, Gravity Field, Flock Field, and
+Boltzmann Field. Boltzmann Field is a pedagogical hard-disk gas simulation, not
+a numerical proof of the Boltzmann--Grad limit: its colour encodes current
+velocity rather than particle species, and it caps its 60 Hz particle workload.
+Its lower chart uses amber for the coarse-grained velocity entropy, and a cyan
+baseline/marker for the logarithmically scaled relative kinetic-energy error.
 Gravity embeds its canonical GLSL source at build time, uses the migrated
 864-scene catalogue, and permits one GPU frame in flight. `legacy/` contains
 historical builds but is not a Slowfield entry point.

@@ -555,7 +555,13 @@ unsafe fn create_settings_controls(window: HWND, config: SlowfieldConfig) {
             ID_SELECTION,
         )
     };
-    for label in [c"Random", c"Prime Field", c"Gravity Field", c"Flock Field"] {
+    for label in [
+        c"Random",
+        c"Prime Field",
+        c"Gravity Field",
+        c"Flock Field",
+        c"Boltzmann Field",
+    ] {
         unsafe { SendMessageA(selection, CB_ADDSTRING, 0, label.as_ptr() as isize) };
     }
     let selection_index = match config.launch_selection {
@@ -563,6 +569,7 @@ unsafe fn create_settings_controls(window: HWND, config: SlowfieldConfig) {
         LaunchSelection::Fixed(SceneId::Prime) => 1,
         LaunchSelection::Fixed(SceneId::Gravity) => 2,
         LaunchSelection::Fixed(SceneId::Flock) => 3,
+        LaunchSelection::Fixed(SceneId::Boltzmann) => 4,
     };
     unsafe { SendMessageA(selection, CB_SETCURSEL, selection_index, 0) };
 
@@ -870,6 +877,7 @@ unsafe fn read_settings_controls(window: HWND) -> Option<SlowfieldConfig> {
         1 => LaunchSelection::Fixed(SceneId::Prime),
         2 => LaunchSelection::Fixed(SceneId::Gravity),
         3 => LaunchSelection::Fixed(SceneId::Flock),
+        4 => LaunchSelection::Fixed(SceneId::Boltzmann),
         _ => return None,
     };
     let gravity = GravityFieldSettings {

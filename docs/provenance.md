@@ -38,6 +38,19 @@ build.
   prime-sieve, continuous natural-number reveal, and circular inradius rules
   that the Rust migration must preserve.
 
+## Boltzmann Field
+
+- **Implementation:** independently written in
+  `crates/slowfield/src/scene/boltzmann.rs`; no third-party source files or
+  assets were imported.
+- **Educational reference:**
+  [`ChengyuSheu/hilbert-sixth-lectures`](https://github.com/ChengyuSheu/hilbert-sixth-lectures),
+  an MIT-licensed explanatory visualisation companion to the work of Yu Deng,
+  Zaher Hani, and Xiao Ma.
+- **Scope:** a bounded, two-dimensional, periodic hard-disk animation. It
+  visualises velocity mixing and a coarse-grained velocity entropy; it is not a
+  numerical proof or reproduction of the Boltzmann--Grad limiting theorem.
+
 ## Import boundaries
 
 - Build directories, release binaries, and Rust compilation output are retained

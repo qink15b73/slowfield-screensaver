@@ -1,3 +1,4 @@
+mod boltzmann;
 mod flock;
 mod gravity;
 mod prime;
@@ -61,7 +62,12 @@ pub trait Scene {
 }
 
 pub fn available_scenes() -> &'static [SceneId] {
-    &[SceneId::Prime, SceneId::Gravity, SceneId::Flock]
+    &[
+        SceneId::Prime,
+        SceneId::Gravity,
+        SceneId::Flock,
+        SceneId::Boltzmann,
+    ]
 }
 
 /// Creates one field from the host's one-per-launch random state. Fields may
@@ -82,5 +88,6 @@ pub fn create_scene(
             launch_seed,
             gravity_settings,
         )),
+        SceneId::Boltzmann => Box::new(boltzmann::BoltzmannScene::new(preview, launch_seed)),
     }
 }

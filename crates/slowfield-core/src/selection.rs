@@ -6,16 +6,18 @@ pub enum SceneId {
     Prime,
     Gravity,
     Flock,
+    Boltzmann,
 }
 
 impl SceneId {
-    pub const ALL: [Self; 3] = [Self::Prime, Self::Gravity, Self::Flock];
+    pub const ALL: [Self; 4] = [Self::Prime, Self::Gravity, Self::Flock, Self::Boltzmann];
 
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::Prime => "Prime Field",
             Self::Gravity => "Gravity Field",
             Self::Flock => "Flock Field",
+            Self::Boltzmann => "Boltzmann Field",
         }
     }
 
@@ -24,6 +26,7 @@ impl SceneId {
             Self::Prime => 1,
             Self::Gravity => 2,
             Self::Flock => 3,
+            Self::Boltzmann => 4,
         }
     }
 
@@ -32,6 +35,7 @@ impl SceneId {
             1 => Some(Self::Prime),
             2 => Some(Self::Gravity),
             3 => Some(Self::Flock),
+            4 => Some(Self::Boltzmann),
             _ => None,
         }
     }
@@ -160,6 +164,7 @@ mod tests {
             LaunchSelection::Fixed(SceneId::Prime),
             LaunchSelection::Fixed(SceneId::Gravity),
             LaunchSelection::Fixed(SceneId::Flock),
+            LaunchSelection::Fixed(SceneId::Boltzmann),
         ] {
             assert_eq!(
                 LaunchSelection::from_storage(selection.storage_value()),
