@@ -50,7 +50,9 @@ The host supplies a high-resolution wake-up signal but does not force every
 scene to render identically:
 
 - Prime Field derives reveal and zoom directly from time; it performs no
-  backlog catch-up.
+  backlog catch-up, and renders its precomputed exact \(\pi(n)\) staircase
+  alongside a numerical \(\operatorname{Li}(n)\) comparison curve when space
+  permits.
 - Flock Field advances a bounded fixed 60 Hz simulation accumulator.
 - Boltzmann Field advances a capped fixed 60 Hz hard-disk simulation and bounds
   its spatial-grid workload to 420 full-screen particles (120 in preview).

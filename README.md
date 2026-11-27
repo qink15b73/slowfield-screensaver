@@ -7,11 +7,22 @@ It begins with four independent visual systems that are being consolidated into
 one Rust application:
 
 - **Prime Field** — an Ulam-prime spiral whose spacing follows the continuous
-  natural-number frontier.
+  natural-number frontier, with the exact prime-counting function \(\pi(n)\)
+  compared with the logarithmic integral \(\operatorname{Li}(n)\).
 - **Gravity Field** — a procedural Schwarzschild-style black-hole scene.
 - **Flock Field** — a fixed-step predator/prey flocking simulation.
 - **Boltzmann Field** — a bounded hard-disk gas visualisation with velocity
   statistics and coarse-grained entropy history.
+
+## Gallery
+
+Each image is an actual 5-second frame from the Windows live-preview mode.
+
+| Prime Field | Gravity Field |
+| --- | --- |
+| ![Prime Field: five seconds into the Ulam-prime reveal](docs/screenshots/prime-field.png) | ![Gravity Field: five seconds into the procedural black-hole scene](docs/screenshots/gravity-field.png) |
+| Flock Field | Boltzmann Field |
+| ![Flock Field: five seconds into the flock simulation](docs/screenshots/flock-field.png) | ![Boltzmann Field: five seconds into the hard-disk gas simulation](docs/screenshots/boltzmann-field.png) |
 
 The working default chooses one available field randomly at launch. The native
 `/c` settings window permits choosing one fixed field and adjusting the

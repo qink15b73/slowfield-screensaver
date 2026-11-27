@@ -9,6 +9,8 @@ const HOLD_SECONDS: f32 = 7.0;
 const NEW_POINT_GLOW_SECONDS: f32 = 0.85;
 const MIN_ZOOM_RADIUS: f32 = 9.0;
 const CANVAS_HALF_EXTENT: f32 = 0.42;
+const CURVE_SAMPLE_COUNT: usize = 256;
+const CURVE_PANEL_MARGIN: f32 = 24.0;
 
 #[derive(Clone, Copy)]
 struct Color {
@@ -95,6 +97,26 @@ struct UlamPoint {
     energy: f32,
 }
 
+/// A prime-count sample is kept separate from the Ulam coordinates so the
+/// graph can show the exact step function π(n), not a visual fit to it.
+#[derive(Clone, Copy, Debug)]
+struct PrimeCountPoint {
+    number: u32,
+    count: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SmoothCountPoint {
+    number: u32,
+    estimate: f32,
+}
+
+struct PrimeCountCurve {
+    maximum_number: u32,
+    exact: Vec<PrimeCountPoint>,
+    logarithmic_integral: Vec<SmoothCountPoint>,
+}
+
 struct PrimeFrame {
     palette: Palette,
     center: (f32, f32),
@@ -115,6 +137,7 @@ pub struct PrimeScene {
     shape: FieldShape,
     maximum_side: u32,
     points: Vec<UlamPoint>,
+    count_curve: PrimeCountCurve,
 }
 
 impl PrimeScene {
@@ -131,6 +154,7 @@ impl PrimeScene {
             shape: FieldShape::Square,
             maximum_side: 0,
             points: Vec::new(),
+            count_curve: PrimeCountCurve::default(),
         };
         scene.rebuild();
         scene
@@ -146,6 +170,8 @@ impl PrimeScene {
         self.shape =
             FieldShape::from_seed(self.scene_seed ^ (self.scene_index as u32).rotate_left(7));
         self.points = generate_points(self.maximum_side, self.scene_seed);
+        self.count_curve =
+            generate_prime_count_curve(&self.points, self.maximum_side * self.maximum_side);
     }
 
     fn advance_scene_if_needed(&mut self, elapsed_seconds: f32) {
@@ -342,6 +368,145 @@ impl PrimeScene {
             glEnd();
         }
     }
+
+    unsafe fn draw_prime_count_curve(&self, width: f32, height: f32, lit_number: u32) {
+        if width < 640.0 || height < 400.0 {
+            return;
+        }
+        let panel_width = (width * 0.285).clamp(250.0, 380.0);
+        let panel_height = (height * 0.205).clamp(116.0, 172.0);
+        let panel_left = CURVE_PANEL_MARGIN;
+        let panel_top = height - panel_height - CURVE_PANEL_MARGIN;
+        let inset = 11.0;
+        let graph_left = panel_left + inset;
+        let graph_top = panel_top + inset;
+        let graph_width = panel_width - inset * 2.0;
+        let graph_height = panel_height - inset * 2.0;
+        let curve = &self.count_curve;
+        let cursor = lit_number.min(curve.maximum_number);
+        let current_count = curve.exact.partition_point(|point| point.number <= cursor) as f32;
+        // Scale to the revealed range. A final-range scale makes the genuine
+        // π(n)-Li(n) separation sub-pixel through most of the animation.
+        let visible_scale = current_count
+            .max(curve.logarithmic_integral_at(cursor))
+            .max(2.0)
+            * 1.08;
+        let project = |number: u32, count: f32| {
+            (
+                graph_left
+                    + (number.saturating_sub(2) as f32 / cursor.saturating_sub(2).max(1) as f32)
+                        * graph_width,
+                graph_top + graph_height - count / visible_scale * graph_height,
+            )
+        };
+        unsafe {
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glColor4f(0.004, 0.016, 0.038, 0.86);
+            glBegin(GL_QUADS);
+            glVertex2f(panel_left, panel_top);
+            glVertex2f(panel_left + panel_width, panel_top);
+            glVertex2f(panel_left + panel_width, panel_top + panel_height);
+            glVertex2f(panel_left, panel_top + panel_height);
+            glEnd();
+
+            glLineWidth(1.0);
+            glColor4f(0.30, 0.70, 0.92, 0.28);
+            glBegin(GL_LINE_LOOP);
+            glVertex2f(panel_left, panel_top);
+            glVertex2f(panel_left + panel_width, panel_top);
+            glVertex2f(panel_left + panel_width, panel_top + panel_height);
+            glVertex2f(panel_left, panel_top + panel_height);
+            glEnd();
+            glBegin(GL_LINES);
+            for division in 1..4 {
+                let y = graph_top + graph_height * division as f32 / 4.0;
+                glVertex2f(graph_left, y);
+                glVertex2f(graph_left + graph_width, y);
+            }
+            glEnd();
+
+            // The amber line is the classical logarithmic-integral estimate
+            // Li(n), not an adjustable numerical fit. Both curves are
+            // evaluated only through the current natural-number frontier. The
+            // horizontal axis expands with that frontier, keeping the visible
+            // π(n)-Li(n) separation readable during the reveal.
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+            glLineWidth(2.1);
+            glColor4f(1.0, 0.66, 0.28, 0.92);
+            glBegin(GL_LINE_STRIP);
+            let visible_estimates = curve
+                .logarithmic_integral
+                .iter()
+                .copied()
+                .take_while(|point| point.number <= cursor)
+                .collect::<Vec<_>>();
+            for point in &visible_estimates {
+                let (x, y) = project(point.number, point.estimate);
+                glVertex2f(x, y);
+            }
+            if let Some(last) = visible_estimates.last().copied()
+                && last.number < cursor
+            {
+                let (start_x, start_y) = project(last.number, last.estimate);
+                let (end_x, end_y) = project(cursor, curve.logarithmic_integral_at(cursor));
+                glVertex2f(start_x, start_y);
+                glVertex2f(end_x, end_y);
+            }
+            glEnd();
+
+            // π(n) is exactly constant between primes and increases by one at
+            // every prime, so it is deliberately drawn as a staircase.
+            glLineWidth(1.35);
+            glColor4f(0.28, 0.84, 0.98, 0.95);
+            glBegin(GL_LINE_STRIP);
+            let mut previous_count = 0.0;
+            let (x, y) = project(2, previous_count);
+            glVertex2f(x, y);
+            for point in &curve.exact {
+                if point.number > cursor {
+                    break;
+                }
+                let (before_x, before_y) = project(point.number, previous_count);
+                glVertex2f(before_x, before_y);
+                let (_, after_y) = project(point.number, point.count as f32);
+                glVertex2f(before_x, after_y);
+                previous_count = point.count as f32;
+            }
+            let (end_x, end_y) = project(cursor, previous_count);
+            glVertex2f(end_x, end_y);
+            glEnd();
+        }
+    }
+}
+
+impl Default for PrimeCountCurve {
+    fn default() -> Self {
+        Self {
+            maximum_number: 2,
+            exact: Vec::new(),
+            logarithmic_integral: Vec::new(),
+        }
+    }
+}
+
+impl PrimeCountCurve {
+    fn logarithmic_integral_at(&self, number: u32) -> f32 {
+        let index = self
+            .logarithmic_integral
+            .partition_point(|point| point.number <= number);
+        match (
+            self.logarithmic_integral.get(index.saturating_sub(1)),
+            self.logarithmic_integral.get(index),
+        ) {
+            (Some(lower), Some(upper)) if upper.number > lower.number => {
+                let fraction =
+                    (number - lower.number) as f32 / (upper.number - lower.number) as f32;
+                lower.estimate + (upper.estimate - lower.estimate) * fraction
+            }
+            (Some(lower), _) => lower.estimate,
+            _ => 0.0,
+        }
+    }
 }
 
 impl Scene for PrimeScene {
@@ -391,6 +556,7 @@ impl Scene for PrimeScene {
                 lit_number,
                 field_radius,
             });
+            self.draw_prime_count_curve(width, height, lit_number);
             glDisable(GL_BLEND);
         }
         true
@@ -401,6 +567,58 @@ impl Scene for PrimeScene {
     unsafe fn presented(&mut self, _frame: Frame, _succeeded: bool) {}
 
     unsafe fn deactivate(&mut self) {}
+}
+
+fn generate_prime_count_curve(points: &[UlamPoint], maximum_number: u32) -> PrimeCountCurve {
+    const LI_AT_TWO: f32 = 1.045_163_8;
+    let mut exact = Vec::with_capacity(points.len());
+    for (index, point) in points.iter().enumerate() {
+        exact.push(PrimeCountPoint {
+            number: point.number,
+            count: (index + 1) as u32,
+        });
+    }
+
+    let sample_count = CURVE_SAMPLE_COUNT
+        .min(maximum_number.saturating_sub(1) as usize)
+        .max(2);
+    let mut logarithmic_integral = Vec::with_capacity(sample_count);
+    let mut sample_index = 0;
+    let mut next_sample = 2_u32;
+    let mut integral = LI_AT_TWO;
+    for number in 2..=maximum_number {
+        while sample_index < sample_count && number >= next_sample {
+            logarithmic_integral.push(SmoothCountPoint {
+                number,
+                estimate: integral,
+            });
+            sample_index += 1;
+            next_sample = 2
+                + ((maximum_number.saturating_sub(2) as u64 * sample_index as u64)
+                    / (sample_count.saturating_sub(1) as u64)) as u32;
+        }
+        if number < maximum_number {
+            let left = number as f32;
+            let right = (number + 1) as f32;
+            // Trapezoidal integration of 1/log x from 2 to n approximates the
+            // offset logarithmic integral Li(n) without its singularity at 1.
+            integral += 0.5 * (1.0 / left.ln() + 1.0 / right.ln());
+        }
+    }
+    if logarithmic_integral
+        .last()
+        .is_none_or(|point| point.number != maximum_number)
+    {
+        logarithmic_integral.push(SmoothCountPoint {
+            number: maximum_number,
+            estimate: integral,
+        });
+    }
+    PrimeCountCurve {
+        maximum_number,
+        exact,
+        logarithmic_integral,
+    }
 }
 
 fn project(point: (f32, f32), center: (f32, f32), scale: f32) -> (f32, f32) {
@@ -489,7 +707,10 @@ fn mix_bits(mut value: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{FieldShape, GROWTH_SECONDS, PrimeScene, generate_points, spiral_coordinate};
+    use super::{
+        FieldShape, GROWTH_SECONDS, PrimeScene, generate_points, generate_prime_count_curve,
+        spiral_coordinate,
+    };
 
     #[test]
     fn first_spiral_turn_has_the_expected_coordinates() {
@@ -532,5 +753,20 @@ mod tests {
     fn seeded_scene_shape_is_repeatable() {
         assert_eq!(FieldShape::from_seed(10), FieldShape::Square);
         assert_eq!(FieldShape::from_seed(11), FieldShape::Circle);
+    }
+
+    #[test]
+    fn prime_count_curve_uses_the_exact_prime_counting_staircase() {
+        let points = generate_points(5, 7);
+        let curve = generate_prime_count_curve(&points, 25);
+        assert_eq!(curve.exact.len(), 9);
+        assert_eq!(curve.exact[0].number, 2);
+        assert_eq!(curve.exact[0].count, 1);
+        assert_eq!(curve.exact.last().map(|point| point.count), Some(9));
+        assert_eq!(
+            curve.logarithmic_integral.last().map(|point| point.number),
+            Some(25)
+        );
+        assert!(curve.logarithmic_integral_at(25) > 9.0);
     }
 }
